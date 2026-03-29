@@ -20,152 +20,139 @@ USE WAREHOUSE HEALTHCARE_AI_WH;
 -- SEMANTIC VIEW
 -----------------------------------------------------------------------
 CREATE OR REPLACE SEMANTIC VIEW ANALYTICS.HEALTHCARE_ANALYTICS
-  COMMENT = 'Healthcare analytics semantic view for Cortex Analyst. Covers patients, providers, claims, and appointments.'
-AS
+
   TABLES (
-    -- PATIENTS table
-    ANALYTICS.PATIENTS
-      WITH SEMANTICS (
-        PATIENT_ID IDENTIFIER 'Unique patient identifier',
-        FIRST_NAME DIMENSION 'Patient first name',
-        LAST_NAME DIMENSION 'Patient last name',
-        DATE_OF_BIRTH DIMENSION 'Patient date of birth',
-        GENDER DIMENSION 'Patient gender (Male, Female)',
-        CITY DIMENSION 'Patient city of residence',
-        STATE DIMENSION 'Patient state of residence',
-        ZIP_CODE DIMENSION 'Patient zip code',
-        INSURANCE_PLAN DIMENSION 'Insurance plan name (Aetna PPO, UnitedHealth Choice Plus, Cigna Open Access, Anthem Blue Cross, Medicare Advantage)',
-        PRIMARY_PROVIDER_ID DIMENSION 'FK to PROVIDERS table — the patient primary care provider',
-        REGISTERED_DATE DIMENSION 'Date patient was registered in the system'
-      ),
+    PATIENTS AS ANALYTICS.PATIENTS
+      PRIMARY KEY (PATIENT_ID)
+      COMMENT = 'Patient demographics and registration',
 
-    -- PROVIDERS table
-    ANALYTICS.PROVIDERS
-      WITH SEMANTICS (
-        PROVIDER_ID IDENTIFIER 'Unique provider identifier',
-        PROVIDER_NAME DIMENSION 'Full name of the doctor or provider',
-        SPECIALTY DIMENSION 'Medical specialty (Internal Medicine, Cardiology, Orthopedics, Neurology, Oncology, Psychiatry, Pediatrics, Dermatology, Radiology, Pulmonology, Endocrinology, Gastroenterology)',
-        FACILITY_NAME DIMENSION 'Hospital or clinic name where provider practices',
-        CITY DIMENSION 'City where the facility is located',
-        STATE DIMENSION 'State where the facility is located',
-        NPI_NUMBER DIMENSION 'National Provider Identifier number',
-        IS_ACTIVE DIMENSION 'Whether the provider is currently active'
-      ),
+    PROVIDERS AS ANALYTICS.PROVIDERS
+      PRIMARY KEY (PROVIDER_ID)
+      COMMENT = 'Provider directory and specialties',
 
-    -- CLAIMS table
-    ANALYTICS.CLAIMS
-      WITH SEMANTICS (
-        CLAIM_ID IDENTIFIER 'Unique claim identifier',
-        PATIENT_ID DIMENSION 'FK to PATIENTS table',
-        PROVIDER_ID DIMENSION 'FK to PROVIDERS table',
-        SERVICE_DATE DIMENSION 'Date the medical service was performed',
-        CLAIM_DATE DIMENSION 'Date the claim was submitted',
-        PROCEDURE_CODE DIMENSION 'CPT procedure code',
-        PROCEDURE_DESC DIMENSION 'Description of the medical procedure',
-        DIAGNOSIS_CODE DIMENSION 'ICD-10 diagnosis code',
-        DIAGNOSIS_DESC DIMENSION 'Description of the diagnosis',
-        BILLED_AMOUNT MEASURE 'Total amount billed by the provider in dollars' WITH AGGREGATIONS (SUM, AVG, MIN, MAX),
-        ALLOWED_AMOUNT MEASURE 'Amount allowed by the insurance plan in dollars' WITH AGGREGATIONS (SUM, AVG, MIN, MAX),
-        PAID_AMOUNT MEASURE 'Amount paid by insurance in dollars' WITH AGGREGATIONS (SUM, AVG, MIN, MAX),
-        PATIENT_RESPONSIBILITY MEASURE 'Amount the patient owes (copay, coinsurance, deductible) in dollars' WITH AGGREGATIONS (SUM, AVG, MIN, MAX),
-        CLAIM_STATUS DIMENSION 'Status of the claim: Approved, Denied, Pending, Under Review',
-        DENIAL_REASON DIMENSION 'Reason for claim denial if applicable'
-      ),
+    CLAIMS AS ANALYTICS.CLAIMS
+      PRIMARY KEY (CLAIM_ID)
+      COMMENT = 'Claims data including billing, diagnosis, procedures, and status',
 
-    -- APPOINTMENTS table
-    ANALYTICS.APPOINTMENTS
-      WITH SEMANTICS (
-        APPOINTMENT_ID IDENTIFIER 'Unique appointment identifier',
-        PATIENT_ID DIMENSION 'FK to PATIENTS table',
-        PROVIDER_ID DIMENSION 'FK to PROVIDERS table',
-        APPOINTMENT_DATE DIMENSION 'Date and time of the appointment',
-        APPOINTMENT_TYPE DIMENSION 'Type of visit: In-Person, Telehealth, Phone',
-        VISIT_REASON DIMENSION 'Reason for the visit or chief complaint',
-        DURATION_MINUTES MEASURE 'Duration of the appointment in minutes' WITH AGGREGATIONS (SUM, AVG, MIN, MAX),
-        STATUS DIMENSION 'Appointment status: Completed, Cancelled, No-Show, Scheduled',
-        HAS_AUDIO_RECORDING DIMENSION 'Whether the consultation was recorded as audio (TRUE/FALSE)',
-        HAS_DOCUMENT DIMENSION 'Whether a medical document was generated (TRUE/FALSE)'
-      )
+    APPOINTMENTS AS ANALYTICS.APPOINTMENTS
+      PRIMARY KEY (APPOINTMENT_ID)
+      COMMENT = 'Appointment scheduling, visit types, and recording status'
   )
 
   RELATIONSHIPS (
-    ANALYTICS.PATIENTS (PRIMARY_PROVIDER_ID) REFERENCES ANALYTICS.PROVIDERS (PROVIDER_ID),
-    ANALYTICS.CLAIMS (PATIENT_ID) REFERENCES ANALYTICS.PATIENTS (PATIENT_ID),
-    ANALYTICS.CLAIMS (PROVIDER_ID) REFERENCES ANALYTICS.PROVIDERS (PROVIDER_ID),
-    ANALYTICS.APPOINTMENTS (PATIENT_ID) REFERENCES ANALYTICS.PATIENTS (PATIENT_ID),
-    ANALYTICS.APPOINTMENTS (PROVIDER_ID) REFERENCES ANALYTICS.PROVIDERS (PROVIDER_ID)
+    patients_to_providers AS
+      PATIENTS (PRIMARY_PROVIDER_ID) REFERENCES PROVIDERS (PROVIDER_ID),
+    claims_to_patients AS
+      CLAIMS (PATIENT_ID) REFERENCES PATIENTS (PATIENT_ID),
+    claims_to_providers AS
+      CLAIMS (PROVIDER_ID) REFERENCES PROVIDERS (PROVIDER_ID),
+    appointments_to_patients AS
+      APPOINTMENTS (PATIENT_ID) REFERENCES PATIENTS (PATIENT_ID),
+    appointments_to_providers AS
+      APPOINTMENTS (PROVIDER_ID) REFERENCES PROVIDERS (PROVIDER_ID)
   )
 
-  VERIFIED QUERIES (
-    -- Claims queries
-    'Total billed amount by provider specialty' AS
-      SELECT pr.SPECIALTY, SUM(c.BILLED_AMOUNT) AS TOTAL_BILLED
-      FROM ANALYTICS.CLAIMS c
-      JOIN ANALYTICS.PROVIDERS pr ON c.PROVIDER_ID = pr.PROVIDER_ID
-      GROUP BY pr.SPECIALTY
-      ORDER BY TOTAL_BILLED DESC,
+  DIMENSIONS (
+    PATIENTS.first_name AS FIRST_NAME
+      COMMENT = 'Patient first name',
+    PATIENTS.last_name AS LAST_NAME
+      COMMENT = 'Patient last name',
+    PATIENTS.date_of_birth AS DATE_OF_BIRTH
+      COMMENT = 'Patient date of birth',
+    PATIENTS.gender AS GENDER
+      COMMENT = 'Patient gender (Male, Female)',
+    PATIENTS.city AS CITY
+      COMMENT = 'Patient city of residence',
+    PATIENTS.state AS STATE
+      COMMENT = 'Patient state of residence',
+    PATIENTS.zip_code AS ZIP_CODE
+      COMMENT = 'Patient zip code',
+    PATIENTS.insurance_plan AS INSURANCE_PLAN
+      COMMENT = 'Insurance plan name (Aetna PPO, UnitedHealth Choice Plus, Cigna Open Access, Anthem Blue Cross, Medicare Advantage)',
+    PATIENTS.registered_date AS REGISTERED_DATE
+      COMMENT = 'Date patient was registered in the system',
 
-    'Claims by status' AS
-      SELECT CLAIM_STATUS, COUNT(*) AS CLAIM_COUNT, SUM(BILLED_AMOUNT) AS TOTAL_BILLED
-      FROM ANALYTICS.CLAIMS
-      GROUP BY CLAIM_STATUS,
+    PROVIDERS.provider_name AS PROVIDER_NAME
+      COMMENT = 'Full name of the doctor or provider',
+    PROVIDERS.specialty AS SPECIALTY
+      COMMENT = 'Medical specialty (Internal Medicine, Cardiology, Orthopedics, Neurology, Oncology, Psychiatry, Pediatrics, Dermatology, Radiology, Pulmonology, Endocrinology, Gastroenterology)',
+    PROVIDERS.facility_name AS FACILITY_NAME
+      COMMENT = 'Hospital or clinic name where provider practices',
+    PROVIDERS.provider_city AS PROVIDERS.CITY
+      COMMENT = 'City where the facility is located',
+    PROVIDERS.provider_state AS PROVIDERS.STATE
+      COMMENT = 'State where the facility is located',
+    PROVIDERS.npi_number AS NPI_NUMBER
+      COMMENT = 'National Provider Identifier number',
+    PROVIDERS.is_active AS IS_ACTIVE
+      COMMENT = 'Whether the provider is currently active',
 
-    'Average paid amount per diagnosis' AS
-      SELECT DIAGNOSIS_DESC, COUNT(*) AS CLAIM_COUNT, AVG(PAID_AMOUNT) AS AVG_PAID
-      FROM ANALYTICS.CLAIMS
-      GROUP BY DIAGNOSIS_DESC
-      ORDER BY AVG_PAID DESC,
+    CLAIMS.service_date AS SERVICE_DATE
+      COMMENT = 'Date the medical service was performed',
+    CLAIMS.claim_date AS CLAIM_DATE
+      COMMENT = 'Date the claim was submitted',
+    CLAIMS.procedure_code AS PROCEDURE_CODE
+      COMMENT = 'CPT procedure code',
+    CLAIMS.procedure_desc AS PROCEDURE_DESC
+      COMMENT = 'Description of the medical procedure',
+    CLAIMS.diagnosis_code AS DIAGNOSIS_CODE
+      COMMENT = 'ICD-10 diagnosis code',
+    CLAIMS.diagnosis_desc AS DIAGNOSIS_DESC
+      COMMENT = 'Description of the diagnosis',
+    CLAIMS.claim_status AS CLAIM_STATUS
+      COMMENT = 'Status of the claim: Approved, Denied, Pending, Under Review',
+    CLAIMS.denial_reason AS DENIAL_REASON
+      COMMENT = 'Reason for claim denial if applicable',
 
-    'Patients with the highest total billed amount' AS
-      SELECT p.FIRST_NAME || '' '' || p.LAST_NAME AS PATIENT_NAME, p.INSURANCE_PLAN,
-             SUM(c.BILLED_AMOUNT) AS TOTAL_BILLED, COUNT(*) AS CLAIM_COUNT
-      FROM ANALYTICS.CLAIMS c
-      JOIN ANALYTICS.PATIENTS p ON c.PATIENT_ID = p.PATIENT_ID
-      GROUP BY p.FIRST_NAME, p.LAST_NAME, p.INSURANCE_PLAN
-      ORDER BY TOTAL_BILLED DESC,
+    APPOINTMENTS.appointment_date AS APPOINTMENT_DATE
+      COMMENT = 'Date and time of the appointment',
+    APPOINTMENTS.appointment_type AS APPOINTMENT_TYPE
+      COMMENT = 'Type of visit: In-Person, Telehealth, Phone',
+    APPOINTMENTS.visit_reason AS VISIT_REASON
+      COMMENT = 'Reason for the visit or chief complaint',
+    APPOINTMENTS.status AS STATUS
+      COMMENT = 'Appointment status: Completed, Cancelled, No-Show, Scheduled',
+    APPOINTMENTS.has_audio_recording AS HAS_AUDIO_RECORDING
+      COMMENT = 'Whether the consultation was recorded as audio (TRUE/FALSE)',
+    APPOINTMENTS.has_document AS HAS_DOCUMENT
+      COMMENT = 'Whether a medical document was generated (TRUE/FALSE)'
+  )
 
-    'Denied claims with reasons' AS
-      SELECT c.CLAIM_ID, p.FIRST_NAME || '' '' || p.LAST_NAME AS PATIENT_NAME,
-             c.PROCEDURE_DESC, c.BILLED_AMOUNT, c.DENIAL_REASON
-      FROM ANALYTICS.CLAIMS c
-      JOIN ANALYTICS.PATIENTS p ON c.PATIENT_ID = p.PATIENT_ID
-      WHERE c.CLAIM_STATUS = ''Denied'',
+  METRICS (
+    CLAIMS.total_billed_amount AS SUM(BILLED_AMOUNT)
+      COMMENT = 'Total amount billed by the provider in dollars',
+    CLAIMS.avg_billed_amount AS AVG(BILLED_AMOUNT)
+      COMMENT = 'Average amount billed by the provider in dollars',
+    CLAIMS.total_allowed_amount AS SUM(ALLOWED_AMOUNT)
+      COMMENT = 'Total amount allowed by the insurance plan in dollars',
+    CLAIMS.avg_allowed_amount AS AVG(ALLOWED_AMOUNT)
+      COMMENT = 'Average amount allowed by the insurance plan in dollars',
+    CLAIMS.total_paid_amount AS SUM(PAID_AMOUNT)
+      COMMENT = 'Total amount paid by insurance in dollars',
+    CLAIMS.avg_paid_amount AS AVG(PAID_AMOUNT)
+      COMMENT = 'Average amount paid by insurance in dollars',
+    CLAIMS.total_patient_responsibility AS SUM(PATIENT_RESPONSIBILITY)
+      COMMENT = 'Total amount the patient owes (copay, coinsurance, deductible) in dollars',
+    CLAIMS.avg_patient_responsibility AS AVG(PATIENT_RESPONSIBILITY)
+      COMMENT = 'Average amount the patient owes in dollars',
+    CLAIMS.claim_count AS COUNT(CLAIM_ID)
+      COMMENT = 'Number of claims',
 
-    -- Appointment queries
-    'Appointment count by type' AS
-      SELECT APPOINTMENT_TYPE, STATUS, COUNT(*) AS APPT_COUNT
-      FROM ANALYTICS.APPOINTMENTS
-      GROUP BY APPOINTMENT_TYPE, STATUS,
+    APPOINTMENTS.total_duration_minutes AS SUM(DURATION_MINUTES)
+      COMMENT = 'Total duration of appointments in minutes',
+    APPOINTMENTS.avg_duration_minutes AS AVG(DURATION_MINUTES)
+      COMMENT = 'Average duration of appointments in minutes',
+    APPOINTMENTS.appointment_count AS COUNT(APPOINTMENT_ID)
+      COMMENT = 'Number of appointments',
 
-    'Average appointment duration by specialty' AS
-      SELECT pr.SPECIALTY, AVG(a.DURATION_MINUTES) AS AVG_DURATION_MIN
-      FROM ANALYTICS.APPOINTMENTS a
-      JOIN ANALYTICS.PROVIDERS pr ON a.PROVIDER_ID = pr.PROVIDER_ID
-      WHERE a.STATUS = ''Completed''
-      GROUP BY pr.SPECIALTY
-      ORDER BY AVG_DURATION_MIN DESC,
+    PATIENTS.patient_count AS COUNT(PATIENT_ID)
+      COMMENT = 'Number of patients',
 
-    'Appointments with audio recordings' AS
-      SELECT a.APPOINTMENT_ID, p.FIRST_NAME || '' '' || p.LAST_NAME AS PATIENT_NAME,
-             pr.PROVIDER_NAME, a.APPOINTMENT_DATE, a.VISIT_REASON
-      FROM ANALYTICS.APPOINTMENTS a
-      JOIN ANALYTICS.PATIENTS p ON a.PATIENT_ID = p.PATIENT_ID
-      JOIN ANALYTICS.PROVIDERS pr ON a.PROVIDER_ID = pr.PROVIDER_ID
-      WHERE a.HAS_AUDIO_RECORDING = TRUE,
+    PROVIDERS.provider_count AS COUNT(PROVIDER_ID)
+      COMMENT = 'Number of providers'
+  )
 
-    -- Patient queries
-    'Patients by insurance plan' AS
-      SELECT INSURANCE_PLAN, COUNT(*) AS PATIENT_COUNT
-      FROM ANALYTICS.PATIENTS
-      GROUP BY INSURANCE_PLAN
-      ORDER BY PATIENT_COUNT DESC,
-
-    'Providers by specialty and facility' AS
-      SELECT SPECIALTY, FACILITY_NAME, PROVIDER_NAME, CITY
-      FROM ANALYTICS.PROVIDERS
-      WHERE IS_ACTIVE = TRUE
-      ORDER BY SPECIALTY, FACILITY_NAME
-  );
+  COMMENT = 'Healthcare analytics semantic view for Cortex Analyst. Covers patients, providers, claims, and appointments.';
 
 -----------------------------------------------------------------------
 -- VERIFY

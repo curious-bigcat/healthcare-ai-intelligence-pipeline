@@ -48,7 +48,7 @@ BEGIN
       -----------------------------------------------------------
       AI_PARSE_DOCUMENT(
         TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME),
-        'OCR'
+        OBJECT_CONSTRUCT('mode', 'OCR')
       ):content::VARCHAR                                    AS PARSED_TEXT,
 
       -----------------------------------------------------------
@@ -56,7 +56,7 @@ BEGIN
       -----------------------------------------------------------
       AI_PARSE_DOCUMENT(
         TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME),
-        'LAYOUT'
+        OBJECT_CONSTRUCT('mode', 'LAYOUT')
       )                                                     AS PARSED_LAYOUT,
 
       -----------------------------------------------------------
@@ -64,7 +64,7 @@ BEGIN
       -----------------------------------------------------------
       AI_EXTRACT(
         AI_PARSE_DOCUMENT(
-          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
+          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), OBJECT_CONSTRUCT('mode', 'OCR')
         ):content::VARCHAR,
         OBJECT_CONSTRUCT(
           'patient_name',       'string: full name of the patient',
@@ -86,7 +86,7 @@ BEGIN
       -----------------------------------------------------------
       AI_CLASSIFY(
         AI_PARSE_DOCUMENT(
-          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
+          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), OBJECT_CONSTRUCT('mode', 'OCR')
         ):content::VARCHAR,
         ARRAY_CONSTRUCT(
           'Lab Report', 'Discharge Summary', 'Prescription',
@@ -102,13 +102,13 @@ BEGIN
       -----------------------------------------------------------
       SNOWFLAKE.CORTEX.SENTIMENT(
         AI_PARSE_DOCUMENT(
-          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
+          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), OBJECT_CONSTRUCT('mode', 'OCR')
         ):content::VARCHAR
       )                                                     AS SENTIMENT_SCORE,
 
       AI_SENTIMENT(
         AI_PARSE_DOCUMENT(
-          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
+          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), OBJECT_CONSTRUCT('mode', 'OCR')
         ):content::VARCHAR
       )                                                     AS SENTIMENT_DIMENSIONS,
 
@@ -117,7 +117,7 @@ BEGIN
       -----------------------------------------------------------
       SNOWFLAKE.CORTEX.SUMMARIZE(
         AI_PARSE_DOCUMENT(
-          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
+          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), OBJECT_CONSTRUCT('mode', 'OCR')
         ):content::VARCHAR
       )                                                     AS SUMMARY,
 
@@ -126,7 +126,7 @@ BEGIN
       -----------------------------------------------------------
       AI_CLASSIFY(
         AI_PARSE_DOCUMENT(
-          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
+          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), OBJECT_CONSTRUCT('mode', 'OCR')
         ):content::VARCHAR,
         ARRAY_CONSTRUCT('English', 'Spanish', 'French', 'German',
                         'Portuguese', 'Chinese', 'Japanese', 'Korean', 'Arabic')
@@ -135,14 +135,14 @@ BEGIN
       CASE
         WHEN AI_CLASSIFY(
           AI_PARSE_DOCUMENT(
-            TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
+            TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), OBJECT_CONSTRUCT('mode', 'OCR')
           ):content::VARCHAR,
           ARRAY_CONSTRUCT('English', 'Spanish', 'French', 'German',
                           'Portuguese', 'Chinese', 'Japanese', 'Korean', 'Arabic')
         ):labels[0]::VARCHAR != 'English'
         THEN AI_TRANSLATE(
           AI_PARSE_DOCUMENT(
-            TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
+            TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), OBJECT_CONSTRUCT('mode', 'OCR')
           ):content::VARCHAR,
           '',
           'en'
@@ -155,7 +155,7 @@ BEGIN
       -----------------------------------------------------------
       AI_REDACT(
         AI_PARSE_DOCUMENT(
-          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
+          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), OBJECT_CONSTRUCT('mode', 'OCR')
         ):content::VARCHAR
       )                                                     AS REDACTED_TEXT,
 
@@ -169,7 +169,7 @@ BEGIN
           'provide: 1) Three key clinical insights, 2) Any urgent action items, ',
           '3) Recommended follow-ups. Be concise.\n\nDocument:\n',
           AI_PARSE_DOCUMENT(
-            TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
+            TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), OBJECT_CONSTRUCT('mode', 'OCR')
           ):content::VARCHAR
         )
       )                                                     AS KEY_INSIGHTS,
@@ -180,7 +180,7 @@ BEGIN
       AI_EMBED(
         'snowflake-arctic-embed-m-v1.5',
         AI_PARSE_DOCUMENT(
-          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
+          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), OBJECT_CONSTRUCT('mode', 'OCR')
         ):content::VARCHAR
       )                                                     AS EMBEDDING
 

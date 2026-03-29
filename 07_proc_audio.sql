@@ -3,7 +3,7 @@
   Healthcare AI Intelligence Pipeline
 
   Processes unprocessed WAV/MP3 files from RAW.FILES_LOG using 8 AI functions:
-    1. AI_TRANSCRIBE    — speech-to-text with timestamps and speaker diarization
+    1. AI_TRANSCRIBE    — speech-to-text transcription
     2. AI_EXTRACT       — pull structured fields from transcript
     3. AI_CLASSIFY      — categorize consultation type
     4. AI_SENTIMENT     — overall + multi-dimensional sentiment
@@ -28,6 +28,7 @@ CREATE OR REPLACE PROCEDURE PROCESSED.PROCESS_AUDIO_FILES()
   COMMENT = 'Processes unprocessed WAV/MP3 files through 8 Cortex AI functions into AUDIO_INTELLIGENCE'
   EXECUTE AS CALLER
 AS
+$$
 BEGIN
 
   INSERT INTO PROCESSED.AUDIO_INTELLIGENCE (
@@ -43,9 +44,8 @@ BEGIN
       f.FILE_ID,
       f.FILE_NAME,
       AI_TRANSCRIBE(
-        TO_FILE('@RAW.S3_MEDICAL_AUDIO', f.FILE_NAME),
-        OBJECT_CONSTRUCT('mode', 'segments', 'timestamp_granularity', 'word')
-      )                                                     AS RAW_TRANSCRIPT
+        TO_FILE('@RAW.S3_MEDICAL_AUDIO', f.FILE_NAME)
+      ) AS RAW_TRANSCRIPT
     FROM RAW.FILES_LOG f
     WHERE f.FILE_TYPE IN ('WAV', 'MP3')
       AND f.IS_PROCESSED = FALSE
@@ -60,16 +60,13 @@ BEGIN
       t.RAW_TRANSCRIPT:text::VARCHAR                        AS TRANSCRIPT_TEXT,
 
       -----------------------------------------------------------
-      -- 2. AI_TRANSCRIBE — segments with timestamps & speakers
+      -- 2. AI_TRANSCRIBE — segments with timestamps
       -----------------------------------------------------------
       t.RAW_TRANSCRIPT:segments                             AS TRANSCRIPT_SEGMENTS,
 
       t.RAW_TRANSCRIPT:audio_duration::FLOAT                AS AUDIO_DURATION_SECS,
 
-      -- Count distinct speakers from segments
-      (SELECT COUNT(DISTINCT seg.value:speaker)
-       FROM TABLE(FLATTEN(t.RAW_TRANSCRIPT:segments)) seg
-       WHERE seg.value:speaker IS NOT NULL)                 AS SPEAKER_COUNT,
+      NULL::INT                                             AS SPEAKER_COUNT,
 
       -----------------------------------------------------------
       -- 3. AI_EXTRACT — structured fields from transcript
@@ -141,7 +138,7 @@ BEGIN
         CONCAT(
           'You are a medical scribe. Given the following patient consultation transcript, ',
           'generate structured SOAP notes (Subjective, Objective, Assessment, Plan). ',
-          'Be concise and clinically accurate.\n\nTranscript:\n',
+          'Be concise and clinically accurate. Transcript: ',
           t.RAW_TRANSCRIPT:text::VARCHAR
         )
       )                                                     AS CONSULTATION_NOTES,
@@ -166,3 +163,4 @@ BEGIN
   RETURN 'Audio processing complete: ' || CURRENT_TIMESTAMP()::VARCHAR;
 
 END;
+$$

@@ -3,18 +3,17 @@
   Healthcare AI Intelligence Pipeline
 
   Processes unprocessed TXT files from RAW.FILES_LOG using 8 AI functions:
-    1. AI_COMPLETE      — read raw text content from the TXT file
-    2. AI_EXTRACT       — pull structured healthcare fields
-    3. AI_CLASSIFY      — categorize document type
-    4. AI_SENTIMENT     — overall + multi-dimensional sentiment
-    5. AI_SUMMARIZE     — concise summary
-    6. AI_TRANSLATE     — detect language, translate if non-English
-    7. AI_REDACT        — remove PII
-    8. AI_COMPLETE      — generate key insights and action items
-    9. AI_EMBED         — vector embedding for search
+    1. AI_PARSE_DOCUMENT  — read text content from TXT file (LAYOUT mode)
+    2. AI_EXTRACT         — pull structured healthcare fields
+    3. AI_CLASSIFY        — categorize document type
+    4. AI_SENTIMENT       — overall + multi-dimensional sentiment
+    5. AI_SUMMARIZE       — concise summary
+    6. AI_TRANSLATE       — detect language, translate if non-English
+    7. AI_REDACT          — remove PII
+    8. AI_COMPLETE        — generate key insights and action items
+    9. AI_EMBED           — vector embedding for search
 
-  TXT files are already plain text so AI_PARSE_DOCUMENT is not needed.
-  Text content is read via AI_COMPLETE with a pass-through prompt.
+  TXT files are read via AI_PARSE_DOCUMENT (LAYOUT mode).
 
   Inserts results into PROCESSED.TXT_INTELLIGENCE.
 
@@ -32,6 +31,7 @@ CREATE OR REPLACE PROCEDURE PROCESSED.PROCESS_TXT_FILES()
   COMMENT = 'Processes unprocessed TXT files through 8 Cortex AI functions into TXT_INTELLIGENCE'
   EXECUTE AS CALLER
 AS
+$$
 BEGIN
 
   INSERT INTO PROCESSED.TXT_INTELLIGENCE (
@@ -45,12 +45,11 @@ BEGIN
     SELECT
       f.FILE_ID,
       f.FILE_NAME,
-      -- Read TXT file content via AI_COMPLETE with pass-through prompt
-      AI_COMPLETE(
-        'claude-3-5-sonnet',
-        CONCAT('Return the following medical document text exactly as-is, with no modifications:\n\n',
-          TO_VARCHAR(TO_FILE('@RAW.S3_MEDICAL_TXT', f.FILE_NAME)))
-      )                                                     AS FILE_TEXT
+      -- Read TXT file content via AI_PARSE_DOCUMENT (LAYOUT mode)
+      AI_PARSE_DOCUMENT(
+        TO_FILE('@RAW.S3_MEDICAL_TXT', f.FILE_NAME),
+        OBJECT_CONSTRUCT('mode', 'LAYOUT')
+      ):content::VARCHAR AS FILE_TEXT
     FROM RAW.FILES_LOG f
     WHERE f.FILE_TYPE = 'TXT'
       AND f.IS_PROCESSED = FALSE
@@ -141,7 +140,7 @@ BEGIN
         CONCAT(
           'You are a medical document analyst. Given the following medical document, ',
           'provide: 1) Three key clinical insights, 2) Any urgent action items, ',
-          '3) Recommended follow-ups. Be concise.\n\nDocument:\n',
+          '3) Recommended follow-ups. Be concise. Document: ',
           t.FILE_TEXT
         )
       )                                                     AS KEY_INSIGHTS,
@@ -163,3 +162,4 @@ BEGIN
   RETURN 'TXT processing complete: ' || CURRENT_TIMESTAMP()::VARCHAR;
 
 END;
+$$
