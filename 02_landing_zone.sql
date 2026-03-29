@@ -1,14 +1,17 @@
 /*=============================================================================
-  02 - LANDING ZONE: File Log Table, Snowpipe (SQS), Stream & Task Trigger
+  02 - LANDING ZONE: File Log Table, Snowpipe (SQS) & Stream
   Healthcare AI Intelligence Pipeline
 
   Flow:
     S3 file upload -> S3 Event Notification -> SQS Queue -> Snowpipe (auto_ingest)
-    -> RAW.FILES_LOG -> Stream -> Task -> calls PROCESS_NEW_FILES() proc
+    -> RAW.FILES_LOG -> Stream -> Task (created in 04) -> calls PROCESS_NEW_FILES()
 
   Snowpipe auto-ingest on AWS uses SQS (not SNS). When you create a pipe
   with AUTO_INGEST = TRUE, Snowflake provisions an SQS queue. You configure
   S3 event notifications to send to that SQS queue.
+
+  NOTE: The processing TASK is created in 04_stored_procedure.sql (after the
+  proc exists) to avoid referencing a proc that hasn't been created yet.
 
   Steps:
     1. Create the pipes (AUTO_INGEST = TRUE)
@@ -142,22 +145,7 @@ CREATE OR REPLACE STREAM RAW.FILES_LOG_STREAM
   COMMENT = 'Captures new file arrivals for AI processing';
 
 -----------------------------------------------------------------------
--- 8. TASK -- triggered by stream, calls the AI processing stored proc
---    (The stored procedure is defined in 04_stored_procedure.sql)
------------------------------------------------------------------------
-CREATE OR REPLACE TASK RAW.PROCESS_NEW_FILES_TASK
-  WAREHOUSE = HEALTHCARE_AI_WH
-  SCHEDULE  = '1 MINUTE'
-  COMMENT   = 'Polls stream for new files and triggers AI processing'
-  WHEN SYSTEM$STREAM_HAS_DATA('RAW.FILES_LOG_STREAM')
-AS
-  CALL PROCESSED.PROCESS_NEW_FILES();
-
--- Task is created in suspended state; resume after proc is created:
--- ALTER TASK RAW.PROCESS_NEW_FILES_TASK RESUME;
-
------------------------------------------------------------------------
--- 9. VERIFY
+-- 8. VERIFY
 -----------------------------------------------------------------------
 SHOW PIPES IN SCHEMA RAW;
 SHOW STREAMS IN SCHEMA RAW;

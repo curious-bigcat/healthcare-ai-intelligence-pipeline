@@ -1,21 +1,25 @@
 /*=============================================================================
-  04 - AI PROCESSING STORED PROCEDURE
+  04 - AI PROCESSING STORED PROCEDURE + TASK
   Healthcare AI Intelligence Pipeline
 
   This stored procedure is called by the task whenever new files arrive.
   It reads unprocessed rows from RAW.FILES_LOG, then for each file:
 
-  PDFs  → AI_PARSE_DOCUMENT, AI_EXTRACT, AI_CLASSIFY, AI_SENTIMENT,
-          AI_SUMMARIZE, AI_TRANSLATE, AI_REDACT, AI_COMPLETE, AI_EMBED
+  PDFs  -> AI_PARSE_DOCUMENT, AI_EXTRACT, AI_CLASSIFY, AI_SENTIMENT,
+           AI_SUMMARIZE, AI_TRANSLATE, AI_REDACT, AI_COMPLETE, AI_EMBED
 
-  TXTs  → AI_EXTRACT, AI_CLASSIFY, AI_SENTIMENT, AI_SUMMARIZE,
-          AI_TRANSLATE, AI_REDACT, AI_COMPLETE, AI_EMBED
-          (text is read directly — no AI_PARSE_DOCUMENT needed)
+  TXTs  -> AI_EXTRACT, AI_CLASSIFY, AI_SENTIMENT, AI_SUMMARIZE,
+           AI_TRANSLATE, AI_REDACT, AI_COMPLETE, AI_EMBED
+           (text is read directly -- no AI_PARSE_DOCUMENT needed)
 
-  WAVs/MP3s → AI_TRANSCRIBE, AI_EXTRACT, AI_CLASSIFY, AI_SENTIMENT,
-              AI_SUMMARIZE, AI_TRANSLATE, AI_COMPLETE, AI_EMBED
+  WAVs/MP3s -> AI_TRANSCRIBE, AI_EXTRACT, AI_CLASSIFY, AI_SENTIMENT,
+               AI_SUMMARIZE, AI_TRANSLATE, AI_COMPLETE, AI_EMBED
 
   Total: 11 distinct Cortex AI functions used across all paths.
+
+  The TASK is created at the end of this file (after the proc) to ensure
+  the proc reference is valid. Execution order:
+    01 -> 02 (FILES_LOG, pipes, stream) -> 03 (output tables) -> 04 (proc + task)
 =============================================================================*/
 
 USE ROLE ACCOUNTADMIN;
@@ -26,8 +30,8 @@ USE WAREHOUSE HEALTHCARE_AI_WH;
 CREATE OR REPLACE PROCEDURE PROCESSED.PROCESS_NEW_FILES()
   RETURNS VARCHAR
   LANGUAGE SQL
-  EXECUTE AS CALLER
   COMMENT = 'Processes new PDF, TXT, WAV, and MP3 files through 11 Cortex AI functions'
+  EXECUTE AS CALLER
 AS
 BEGIN
 
@@ -480,3 +484,19 @@ BEGIN
   RETURN 'Processing complete: ' || CURRENT_TIMESTAMP()::VARCHAR;
 
 END;
+
+-----------------------------------------------------------------------
+-- TASK -- triggered by stream, calls the AI processing stored proc
+-- Created here (after the proc exists) so the reference is valid.
+-- Depends on: RAW.FILES_LOG_STREAM (from 02), PROCESSED.PROCESS_NEW_FILES (above)
+-----------------------------------------------------------------------
+CREATE OR REPLACE TASK RAW.PROCESS_NEW_FILES_TASK
+  WAREHOUSE = HEALTHCARE_AI_WH
+  SCHEDULE  = '1 MINUTE'
+  COMMENT   = 'Polls stream for new files and triggers AI processing'
+  WHEN SYSTEM$STREAM_HAS_DATA('RAW.FILES_LOG_STREAM')
+AS
+  CALL PROCESSED.PROCESS_NEW_FILES();
+
+-- Task is created in suspended state. Resume once the full pipeline is verified:
+-- ALTER TASK RAW.PROCESS_NEW_FILES_TASK RESUME;
