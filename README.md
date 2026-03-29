@@ -1,6 +1,6 @@
 # Healthcare AI Intelligence Pipeline
 
-An end-to-end demo that lands medical files (PDF, TXT, WAV, MP3) in S3, auto-ingests them into Snowflake via S3 Event Notifications -> SQS -> Snowpipe, processes them through **11 Cortex AI functions**, and exposes the results via Cortex Search, Cortex Analyst, and a unified Cortex Agent with Snowflake Intelligence as the frontend.
+An end-to-end demo that lands medical files (PDF, TXT, WAV, MP3) in S3, auto-ingests them into Snowflake via S3 Event Notifications -> SQS -> Snowpipe, processes them through **11 Cortex AI functions** using separate stored procedures per file type, and exposes the results via Cortex Search, Cortex Analyst, and a unified Cortex Agent with Snowflake Intelligence as the frontend.
 
 ## Architecture
 
@@ -13,46 +13,38 @@ S3 Bucket (pdfs/, txt/, audio/)
         |
   FILES_LOG table  -->  Stream  -->  Task
         |
-  PROCESS_NEW_FILES() Stored Procedure
-    |           |             |
-  PDF/TXT     Audio       All file types
-  AI_PARSE    AI_TRANSCRIBE   AI_EXTRACT
-  AI_COMPLETE                 AI_CLASSIFY
-                              AI_SENTIMENT
-                              AI_SUMMARIZE
-                              AI_TRANSLATE
-                              AI_REDACT
-                              AI_COMPLETE
-                              AI_EMBED
-                              AI_SIMILARITY
-        |                         |
-  DOCUMENT_INTELLIGENCE    AUDIO_INTELLIGENCE
-        |                         |
-  Cortex Search (x2)     Analytics Views
-        |                         |
-        +--- Cortex Agent (3 tools) ---+
-             |          |              |
-       AudioSearch  DocSearch  HealthcareAnalyst
-                                  (Semantic View)
-                       |
-              Snowflake Intelligence UI
+  PROCESS_NEW_FILES() Orchestrator
+    |              |              |
+  PROCESS_PDF    PROCESS_TXT    PROCESS_AUDIO
+  (9 AI funcs)   (8 AI funcs)   (8 AI funcs)
+    |              |              |
+  PDF_INTEL      TXT_INTEL      AUDIO_INTEL
+    |              |              |
+  PDF_SEARCH     TXT_SEARCH     AUDIO_SEARCH
+    |              |              |
+    +--- Cortex Agent (4 tools) ---+
+         |        |       |        |
+    PDFSearch TXTSearch Audio  Analyst
+                  Search   (Semantic View)
+                   |
+          Snowflake Intelligence UI
 ```
 
 ## Cortex AI Functions Used (11)
 
-| # | Function | Purpose |
-|---|----------|---------|
-| 1 | `AI_PARSE_DOCUMENT` | Extract text from PDF files |
-| 2 | `AI_TRANSCRIBE` | Convert WAV/MP3 audio to text |
-| 3 | `AI_EXTRACT` | Pull structured entities (diagnoses, medications, vitals) |
-| 4 | `AI_CLASSIFY` | Categorize documents (clinical, administrative, etc.) |
-| 5 | `AI_SENTIMENT` | Detect patient/provider sentiment |
-| 6 | `AI_SUMMARIZE` | Generate concise document/transcript summaries |
-| 7 | `AI_TRANSLATE` | Translate content to Spanish |
-| 8 | `AI_REDACT` | Remove PII (names, DOB, SSN, addresses) |
-| 9 | `AI_COMPLETE` | Generate clinical insights via LLM (claude-3.5-sonnet) |
-| 10 | `AI_EMBED` | Create vector embeddings (snowflake-arctic-embed-m-v1.5) |
-| 11 | `AI_SIMILARITY` | Compute similarity scores between documents |
+| # | Function | PDF | TXT | Audio | Purpose |
+|---|----------|:---:|:---:|:-----:|---------|
+| 1 | `AI_PARSE_DOCUMENT` | x | | | Extract text from PDF files (OCR + layout) |
+| 2 | `AI_TRANSCRIBE` | | | x | Convert WAV/MP3 audio to text with speaker diarization |
+| 3 | `AI_EXTRACT` | x | x | x | Pull structured entities (diagnoses, medications, vitals) |
+| 4 | `AI_CLASSIFY` | x | x | x | Categorize documents/consultations |
+| 5 | `AI_SENTIMENT` | x | x | x | Detect sentiment (overall + multi-dimensional) |
+| 6 | `AI_SUMMARIZE` | x | x | x | Generate concise summaries |
+| 7 | `AI_TRANSLATE` | x | x | x | Detect language, translate if non-English |
+| 8 | `AI_REDACT` | x | x | | Remove PII (names, DOB, SSN, addresses) |
+| 9 | `AI_COMPLETE` | x | x | x | Generate clinical insights / SOAP notes (claude-3.5-sonnet) |
+| 10 | `AI_EMBED` | x | x | x | Create vector embeddings (snowflake-arctic-embed-m-v1.5) |
+| 11 | `AI_SIMILARITY` | x | x | x | Compute similarity scores between documents |
 
 ## Files
 
@@ -60,18 +52,22 @@ S3 Bucket (pdfs/, txt/, audio/)
 
 | File | Description |
 |------|-------------|
-| `01_setup_database.sql` | Database, schemas, warehouse, S3 storage integration, external stages |
-| `02_landing_zone.sql` | FILES_LOG table, 3 Snowpipes (PDF/TXT/Audio), stream, processing task |
-| `03_processing_tables.sql` | DOCUMENT_INTELLIGENCE and AUDIO_INTELLIGENCE tables |
-| `04_stored_procedure.sql` | `PROCESS_NEW_FILES()` -- core AI processing engine using all 11 functions |
-| `05_structured_data.sql` | Providers (12), Patients (15), Claims (30), Appointments (24) |
-| `06_analytics_views.sql` | DOCUMENT_METRICS, AUDIO_METRICS, COMBINED_INSIGHTS, CLAIMS_SUMMARY views |
-| `07_cortex_search.sql` | Cortex Search services over documents and audio transcripts |
-| `08_semantic_view.sql` | HEALTHCARE_ANALYTICS semantic view with 11 verified queries |
-| `09_cortex_agent.sql` | Cortex Agent with 3 tools (Analyst + 2 Search services) |
-| `10_aws_setup_guide.sql` | Step-by-step AWS setup (S3, IAM, S3 Event Notifications -> SQS) + Snowflake Intelligence UI |
-| `11_sample_data_test.sql` | Validation queries, manual testing, and AI function showcase |
-| `12_s3_sqs_integration_and_file_read.sql` | S3 storage integration, SQS auto-ingest setup, stage file listing and read verification |
+| `01_database_and_schemas.sql` | Database, schemas (RAW, PROCESSED, ANALYTICS), warehouse |
+| `02_s3_integration_and_stages.sql` | S3 storage integration, 3 external stages, internal semantic stage |
+| `03_file_ingestion.sql` | FILES_LOG table, file format, 3 Snowpipes (SQS auto-ingest), stream |
+| `04_processing_tables.sql` | PDF_INTELLIGENCE, TXT_INTELLIGENCE, AUDIO_INTELLIGENCE tables |
+| `05_proc_pdf.sql` | `PROCESS_PDF_FILES()` -- 9 AI functions for PDF processing |
+| `06_proc_txt.sql` | `PROCESS_TXT_FILES()` -- 8 AI functions for TXT processing |
+| `07_proc_audio.sql` | `PROCESS_AUDIO_FILES()` -- 8 AI functions for audio processing |
+| `08_orchestrator_proc_and_task.sql` | `PROCESS_NEW_FILES()` orchestrator + stream-triggered task |
+| `09_structured_data.sql` | Providers (12), Patients (15), Claims (30), Appointments (24) |
+| `10_analytics_views.sql` | PDF_METRICS, TXT_METRICS, AUDIO_METRICS, COMBINED_INSIGHTS, CLAIMS_SUMMARY |
+| `11_cortex_search.sql` | 3 Cortex Search services (PDF, TXT, Audio) |
+| `12_semantic_view.sql` | HEALTHCARE_ANALYTICS semantic view with 11 verified queries |
+| `13_cortex_agent.sql` | Cortex Agent with 4 tools (Analyst + 3 Search services) |
+| `14_aws_setup_guide.sql` | Step-by-step AWS setup (S3, IAM, S3 Event Notifications -> SQS) |
+| `15_validation_queries.sql` | End-to-end validation for every AI function output |
+| `16_snowflake_intelligence.sql` | Snowflake Intelligence UI setup + agent test queries |
 
 ### Python Scripts
 
@@ -123,11 +119,11 @@ python generate_audio_with_voice.py
 
 ### 2. Run SQL scripts in Snowflake
 
-Execute scripts `01` through `09` in order, then run `12_s3_sqs_integration_and_file_read.sql` for integration setup and file read verification. Each script uses the `HEALTHCARE_AI_DEMO` database.
+Execute scripts `01` through `13` in order. Each uses the `HEALTHCARE_AI_DEMO` database.
 
 ### 3. Configure AWS
 
-Follow the guide in `10_aws_setup_guide.sql`:
+Follow the guide in `14_aws_setup_guide.sql`:
 
 1. Create S3 bucket with `healthcare/pdfs/`, `healthcare/txt/`, `healthcare/audio/` prefixes
 2. Create IAM policy for Snowflake S3 access
@@ -148,11 +144,11 @@ aws s3 cp sample_files/audio/ s3://YOUR-BUCKET/healthcare/audio/ --recursive
 
 ### 5. Set up Snowflake Intelligence
 
-Create a new app in Snowflake Intelligence pointing to the `HEALTHCARE_INTELLIGENCE_AGENT` Cortex Agent.
+Create a new app in Snowflake Intelligence pointing to the `HEALTHCARE_INTELLIGENCE_AGENT` Cortex Agent (see `16_snowflake_intelligence.sql`).
 
 ### 6. Validate
 
-Run the queries in `11_sample_data_test.sql` to verify the full pipeline end to end.
+Run the queries in `15_validation_queries.sql` to verify the full pipeline end to end.
 
 ## Snowflake Objects Created
 
@@ -162,24 +158,31 @@ Run the queries in `11_sample_data_test.sql` to verify the full pipeline end to 
 | `HEALTHCARE_AI_WH` | -- | Warehouse (X-Small) |
 | `HEALTHCARE_S3_INTEGRATION` | -- | Storage Integration |
 | `FILES_LOG` | RAW | Table |
+| `METADATA_ONLY_FORMAT` | RAW | File Format |
 | `PIPE_MEDICAL_DOCS` | RAW | Snowpipe |
 | `PIPE_MEDICAL_TXT` | RAW | Snowpipe |
 | `PIPE_MEDICAL_AUDIO` | RAW | Snowpipe |
 | `FILES_LOG_STREAM` | RAW | Stream |
 | `PROCESS_NEW_FILES_TASK` | RAW | Task |
-| `PROCESS_NEW_FILES()` | RAW | Stored Procedure |
-| `DOCUMENT_INTELLIGENCE` | PROCESSED | Table |
+| `PDF_INTELLIGENCE` | PROCESSED | Table |
+| `TXT_INTELLIGENCE` | PROCESSED | Table |
 | `AUDIO_INTELLIGENCE` | PROCESSED | Table |
+| `PROCESS_PDF_FILES()` | PROCESSED | Stored Procedure |
+| `PROCESS_TXT_FILES()` | PROCESSED | Stored Procedure |
+| `PROCESS_AUDIO_FILES()` | PROCESSED | Stored Procedure |
+| `PROCESS_NEW_FILES()` | PROCESSED | Stored Procedure (orchestrator) |
+| `PDF_SEARCH` | PROCESSED | Cortex Search Service |
+| `TXT_SEARCH` | PROCESSED | Cortex Search Service |
+| `AUDIO_SEARCH` | PROCESSED | Cortex Search Service |
 | `PROVIDERS` | ANALYTICS | Table |
 | `PATIENTS` | ANALYTICS | Table |
 | `CLAIMS` | ANALYTICS | Table |
 | `APPOINTMENTS` | ANALYTICS | Table |
-| `DOCUMENT_METRICS` | ANALYTICS | View |
+| `PDF_METRICS` | ANALYTICS | View |
+| `TXT_METRICS` | ANALYTICS | View |
 | `AUDIO_METRICS` | ANALYTICS | View |
 | `COMBINED_INSIGHTS` | ANALYTICS | View |
 | `CLAIMS_SUMMARY` | ANALYTICS | View |
-| `DOCUMENT_SEARCH` | PROCESSED | Cortex Search Service |
-| `AUDIO_SEARCH` | PROCESSED | Cortex Search Service |
 | `HEALTHCARE_ANALYTICS` | ANALYTICS | Semantic View |
 | `HEALTHCARE_INTELLIGENCE_AGENT` | ANALYTICS | Cortex Agent |
 
@@ -194,6 +197,7 @@ Once everything is running, try these in Snowflake Intelligence:
 - "Which providers have the highest claim approval rates?"
 - "Summarize Patricia O'Brien's therapy session"
 - "What is the average claim amount by insurance provider?"
-- "Find all documents related to hypertension treatment"
-- "List upcoming appointments that have audio recordings"
+- "Find all PDF documents related to hypertension treatment"
+- "Search text documents for clinical notes about diabetes"
 - "What clinical insights were generated from the radiology reports?"
+- "Compare findings across PDF and TXT documents for the same patient"

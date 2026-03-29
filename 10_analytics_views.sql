@@ -1,9 +1,12 @@
 /*=============================================================================
-  06 - ANALYTICS VIEWS OVER AI OUTPUTS
+  10 - ANALYTICS VIEWS OVER AI OUTPUTS
   Healthcare AI Intelligence Pipeline
 
-  Flattened, query-friendly views that expose the AI-enriched data from
-  PROCESSED tables. These are what the Semantic View will reference.
+  Flattened, query-friendly views over the 3 intelligence tables plus a
+  combined view and claims summary. These are what Cortex Search and
+  the Semantic View will reference.
+
+  Depends on: 04 (intelligence tables), 09 (structured data)
 =============================================================================*/
 
 USE ROLE ACCOUNTADMIN;
@@ -12,9 +15,9 @@ USE SCHEMA ANALYTICS;
 USE WAREHOUSE HEALTHCARE_AI_WH;
 
 -----------------------------------------------------------------------
--- 1. DOCUMENT_METRICS — flattened document intelligence
+-- 1. PDF_METRICS — flattened PDF intelligence
 -----------------------------------------------------------------------
-CREATE OR REPLACE VIEW ANALYTICS.DOCUMENT_METRICS AS
+CREATE OR REPLACE VIEW ANALYTICS.PDF_METRICS AS
 SELECT
     d.DOC_ID,
     d.FILE_ID,
@@ -51,10 +54,52 @@ SELECT
     d.SUMMARY,
     d.KEY_INSIGHTS
 
-FROM PROCESSED.DOCUMENT_INTELLIGENCE d;
+FROM PROCESSED.PDF_INTELLIGENCE d;
 
 -----------------------------------------------------------------------
--- 2. AUDIO_METRICS — flattened audio intelligence
+-- 2. TXT_METRICS — flattened TXT intelligence
+-----------------------------------------------------------------------
+CREATE OR REPLACE VIEW ANALYTICS.TXT_METRICS AS
+SELECT
+    t.TXT_ID,
+    t.FILE_ID,
+    t.FILE_NAME,
+    t.PROCESSED_AT,
+
+    -- Classification
+    t.DOC_CATEGORY,
+    t.DOC_CATEGORY_CONFIDENCE,
+
+    -- Sentiment
+    t.SENTIMENT_SCORE,
+    t.SENTIMENT_DIMENSIONS:urgency::FLOAT              AS URGENCY_SCORE,
+    t.SENTIMENT_DIMENSIONS:clinical_concern::FLOAT     AS CLINICAL_CONCERN_SCORE,
+    t.SENTIMENT_DIMENSIONS:patient_satisfaction::FLOAT  AS PATIENT_SATISFACTION_SCORE,
+
+    -- Extracted fields
+    t.EXTRACTED_FIELDS:patient_name::VARCHAR            AS PATIENT_NAME,
+    t.EXTRACTED_FIELDS:provider_name::VARCHAR           AS PROVIDER_NAME,
+    t.EXTRACTED_FIELDS:facility_name::VARCHAR           AS FACILITY_NAME,
+    t.EXTRACTED_FIELDS:document_date::VARCHAR           AS DOCUMENT_DATE,
+    t.EXTRACTED_FIELDS:diagnosis::VARCHAR               AS DIAGNOSIS,
+    t.EXTRACTED_FIELDS:insurance_id::VARCHAR            AS INSURANCE_ID,
+    t.EXTRACTED_FIELDS:total_amount::FLOAT              AS BILLED_AMOUNT,
+    ARRAY_SIZE(t.EXTRACTED_FIELDS:medications)          AS MEDICATION_COUNT,
+    ARRAY_SIZE(t.EXTRACTED_FIELDS:procedures)           AS PROCEDURE_COUNT,
+    ARRAY_SIZE(t.EXTRACTED_FIELDS:follow_up_actions)    AS FOLLOW_UP_COUNT,
+
+    -- Language
+    t.DETECTED_LANGUAGE,
+    CASE WHEN t.TRANSLATED_TEXT IS NOT NULL THEN TRUE ELSE FALSE END AS WAS_TRANSLATED,
+
+    -- Summary & insights
+    t.SUMMARY,
+    t.KEY_INSIGHTS
+
+FROM PROCESSED.TXT_INTELLIGENCE t;
+
+-----------------------------------------------------------------------
+-- 3. AUDIO_METRICS — flattened audio intelligence
 -----------------------------------------------------------------------
 CREATE OR REPLACE VIEW ANALYTICS.AUDIO_METRICS AS
 SELECT
@@ -99,51 +144,72 @@ SELECT
 FROM PROCESSED.AUDIO_INTELLIGENCE a;
 
 -----------------------------------------------------------------------
--- 3. COMBINED_INSIGHTS — unified view across both modalities
+-- 4. COMBINED_INSIGHTS — unified view across all 3 modalities
 -----------------------------------------------------------------------
 CREATE OR REPLACE VIEW ANALYTICS.COMBINED_INSIGHTS AS
 SELECT
-    'DOCUMENT'                AS SOURCE_TYPE,
-    DOC_ID                    AS RECORD_ID,
+    'PDF'                         AS SOURCE_TYPE,
+    DOC_ID                        AS RECORD_ID,
     FILE_NAME,
     PROCESSED_AT,
-    DOC_CATEGORY              AS CATEGORY,
+    DOC_CATEGORY                  AS CATEGORY,
     SENTIMENT_SCORE,
     PATIENT_NAME,
     PROVIDER_NAME,
-    DIAGNOSIS                 AS PRIMARY_FINDING,
+    DIAGNOSIS                     AS PRIMARY_FINDING,
     DETECTED_LANGUAGE,
     WAS_TRANSLATED,
     SUMMARY,
     MEDICATION_COUNT,
-    FOLLOW_UP_COUNT           AS ACTION_ITEM_COUNT,
-    NULL::FLOAT               AS DURATION_MINUTES,
-    NULL::NUMBER              AS SPEAKER_COUNT
-FROM ANALYTICS.DOCUMENT_METRICS
+    FOLLOW_UP_COUNT               AS ACTION_ITEM_COUNT,
+    NULL::FLOAT                   AS DURATION_MINUTES,
+    NULL::NUMBER                  AS SPEAKER_COUNT
+FROM ANALYTICS.PDF_METRICS
 
 UNION ALL
 
 SELECT
-    'AUDIO'                   AS SOURCE_TYPE,
-    AUDIO_ID                  AS RECORD_ID,
+    'TXT'                         AS SOURCE_TYPE,
+    TXT_ID                        AS RECORD_ID,
     FILE_NAME,
     PROCESSED_AT,
-    CALL_CATEGORY             AS CATEGORY,
+    DOC_CATEGORY                  AS CATEGORY,
     SENTIMENT_SCORE,
     PATIENT_NAME,
     PROVIDER_NAME,
-    CHIEF_COMPLAINT           AS PRIMARY_FINDING,
+    DIAGNOSIS                     AS PRIMARY_FINDING,
     DETECTED_LANGUAGE,
     WAS_TRANSLATED,
     SUMMARY,
-    MEDICATIONS_MENTIONED     AS MEDICATION_COUNT,
+    MEDICATION_COUNT,
+    FOLLOW_UP_COUNT               AS ACTION_ITEM_COUNT,
+    NULL::FLOAT                   AS DURATION_MINUTES,
+    NULL::NUMBER                  AS SPEAKER_COUNT
+FROM ANALYTICS.TXT_METRICS
+
+UNION ALL
+
+SELECT
+    'AUDIO'                       AS SOURCE_TYPE,
+    AUDIO_ID                      AS RECORD_ID,
+    FILE_NAME,
+    PROCESSED_AT,
+    CALL_CATEGORY                 AS CATEGORY,
+    SENTIMENT_SCORE,
+    PATIENT_NAME,
+    PROVIDER_NAME,
+    CHIEF_COMPLAINT               AS PRIMARY_FINDING,
+    DETECTED_LANGUAGE,
+    WAS_TRANSLATED,
+    SUMMARY,
+    MEDICATIONS_MENTIONED         AS MEDICATION_COUNT,
     ACTION_ITEM_COUNT,
     DURATION_MINUTES,
     SPEAKER_COUNT
 FROM ANALYTICS.AUDIO_METRICS;
 
 -----------------------------------------------------------------------
--- 4. CLAIMS_SUMMARY — aggregated claims for Analyst queries
+-- 5. CLAIMS_SUMMARY — aggregated claims for Analyst queries
 -----------------------------------------------------------------------
 CREATE OR REPLACE VIEW ANALYTICS.CLAIMS_SUMMARY AS
 SELECT
@@ -171,3 +237,8 @@ SELECT
 FROM ANALYTICS.CLAIMS c
 JOIN ANALYTICS.PATIENTS p  ON c.PATIENT_ID  = p.PATIENT_ID
 JOIN ANALYTICS.PROVIDERS pr ON c.PROVIDER_ID = pr.PROVIDER_ID;
+
+-----------------------------------------------------------------------
+-- 6. VERIFY
+-----------------------------------------------------------------------
+SHOW VIEWS IN SCHEMA ANALYTICS;

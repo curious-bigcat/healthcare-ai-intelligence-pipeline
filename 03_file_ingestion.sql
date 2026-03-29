@@ -1,23 +1,20 @@
 /*=============================================================================
-  02 - LANDING ZONE: File Log Table, Snowpipe (SQS) & Stream
+  03 - FILE INGESTION: FILES_LOG, File Format, Snowpipes (SQS) & Stream
   Healthcare AI Intelligence Pipeline
 
   Flow:
-    S3 file upload -> S3 Event Notification -> SQS Queue -> Snowpipe (auto_ingest)
-    -> RAW.FILES_LOG -> Stream -> Task (created in 04) -> calls PROCESS_NEW_FILES()
+    S3 file upload -> S3 Event Notification -> SQS (Snowflake-managed)
+    -> Snowpipe (AUTO_INGEST) -> RAW.FILES_LOG -> Stream
+    -> Task (in 08) -> orchestrator proc -> individual file-type procs
 
-  Snowpipe auto-ingest on AWS uses SQS (not SNS). When you create a pipe
-  with AUTO_INGEST = TRUE, Snowflake provisions an SQS queue. You configure
-  S3 event notifications to send to that SQS queue.
+  Snowpipe AUTO_INGEST on AWS uses SQS. When you create a pipe with
+  AUTO_INGEST = TRUE, Snowflake provisions an SQS queue. You configure
+  S3 event notifications to send to that queue.
 
-  NOTE: The processing TASK is created in 04_stored_procedure.sql (after the
-  proc exists) to avoid referencing a proc that hasn't been created yet.
+  After creating pipes, run SHOW PIPES to get the notification_channel
+  (SQS queue ARN) and configure S3 event notifications (see 14_aws_setup_guide.sql).
 
-  Steps:
-    1. Create the pipes (AUTO_INGEST = TRUE)
-    2. Run SHOW PIPES to get the notification_channel (SQS queue ARN)
-    3. Configure S3 bucket event notifications to send to that SQS queue
-       (see 10_aws_setup_guide.sql and 12_s3_sqs_integration_and_file_read.sql)
+  Depends on: 01 (database/schemas), 02 (stages)
 =============================================================================*/
 
 USE ROLE ACCOUNTADMIN;
@@ -26,14 +23,13 @@ USE SCHEMA RAW;
 USE WAREHOUSE HEALTHCARE_AI_WH;
 
 -----------------------------------------------------------------------
--- 1. FILE LOG TABLE -- every file that lands in S3 gets a row here
+-- 1. FILES_LOG TABLE -- every file that lands in S3 gets a row here
 -----------------------------------------------------------------------
 CREATE OR REPLACE TABLE RAW.FILES_LOG (
     FILE_ID         NUMBER AUTOINCREMENT PRIMARY KEY,
     FILE_NAME       VARCHAR        NOT NULL,
     FILE_PATH       VARCHAR        NOT NULL,
     FILE_TYPE       VARCHAR(10)    NOT NULL COMMENT 'PDF, TXT, WAV, or MP3',
-    FILE_SIZE_BYTES NUMBER,
     S3_EVENT_TIME   TIMESTAMP_NTZ,
     LANDED_AT       TIMESTAMP_NTZ  DEFAULT CURRENT_TIMESTAMP(),
     IS_PROCESSED    BOOLEAN        DEFAULT FALSE,
@@ -41,22 +37,19 @@ CREATE OR REPLACE TABLE RAW.FILES_LOG (
 );
 
 -----------------------------------------------------------------------
--- 2. FILE FORMATS
---    We only need METADATA$ columns (file name, size, scan time),
---    not the actual file content. Using CSV with no delimiters avoids
---    parse errors on binary (PDF, WAV, MP3) and plain text files.
+-- 2. FILE FORMAT
+--    We only need METADATA$ columns (file name, scan time), not file
+--    content. CSV with no delimiters avoids parse errors on binary
+--    (PDF, WAV, MP3) and plain text files.
 -----------------------------------------------------------------------
 CREATE OR REPLACE FILE FORMAT RAW.METADATA_ONLY_FORMAT
-  TYPE            = 'CSV'
+  TYPE             = 'CSV'
   RECORD_DELIMITER = NONE
   FIELD_DELIMITER  = NONE
   COMMENT = 'Format for metadata-only ingestion -- skips file content parsing';
 
 -----------------------------------------------------------------------
 -- 3. SNOWPIPE FOR PDFs
---    AUTO_INGEST = TRUE tells Snowflake to provision an SQS queue.
---    After creation, run: SHOW PIPES to get the notification_channel
---    (the SQS queue ARN) and configure S3 event notifications.
 -----------------------------------------------------------------------
 CREATE OR REPLACE PIPE RAW.PIPE_MEDICAL_DOCS
   AUTO_INGEST = TRUE
@@ -65,16 +58,13 @@ AS
   COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, S3_EVENT_TIME)
   FROM (
     SELECT
-      METADATA$FILENAME                               AS FILE_NAME,
-      METADATA$FILENAME                               AS FILE_PATH,
-      'PDF'                                           AS FILE_TYPE,
-      METADATA$START_SCAN_TIME                        AS S3_EVENT_TIME
+      METADATA$FILENAME            AS FILE_NAME,
+      METADATA$FILENAME            AS FILE_PATH,
+      'PDF'                        AS FILE_TYPE,
+      METADATA$START_SCAN_TIME     AS S3_EVENT_TIME
     FROM @RAW.S3_MEDICAL_DOCS
   )
   FILE_FORMAT = (FORMAT_NAME = 'RAW.METADATA_ONLY_FORMAT');
-
--- Get SQS queue ARN for this pipe
-DESC PIPE RAW.PIPE_MEDICAL_DOCS;
 
 -----------------------------------------------------------------------
 -- 4. SNOWPIPE FOR TXT
@@ -86,20 +76,16 @@ AS
   COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, S3_EVENT_TIME)
   FROM (
     SELECT
-      METADATA$FILENAME                               AS FILE_NAME,
-      METADATA$FILENAME                               AS FILE_PATH,
-      'TXT'                                           AS FILE_TYPE,
-      METADATA$START_SCAN_TIME                        AS S3_EVENT_TIME
+      METADATA$FILENAME            AS FILE_NAME,
+      METADATA$FILENAME            AS FILE_PATH,
+      'TXT'                        AS FILE_TYPE,
+      METADATA$START_SCAN_TIME     AS S3_EVENT_TIME
     FROM @RAW.S3_MEDICAL_TXT
   )
   FILE_FORMAT = (FORMAT_NAME = 'RAW.METADATA_ONLY_FORMAT');
 
--- Get SQS queue ARN for this pipe
-DESC PIPE RAW.PIPE_MEDICAL_TXT;
-
 -----------------------------------------------------------------------
 -- 5. SNOWPIPE FOR AUDIO (WAV and MP3)
---    FILE_TYPE is determined by file extension
 -----------------------------------------------------------------------
 CREATE OR REPLACE PIPE RAW.PIPE_MEDICAL_AUDIO
   AUTO_INGEST = TRUE
@@ -108,36 +94,32 @@ AS
   COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, S3_EVENT_TIME)
   FROM (
     SELECT
-      METADATA$FILENAME                               AS FILE_NAME,
-      METADATA$FILENAME                               AS FILE_PATH,
+      METADATA$FILENAME            AS FILE_NAME,
+      METADATA$FILENAME            AS FILE_PATH,
       CASE
         WHEN METADATA$FILENAME ILIKE '%.mp3' THEN 'MP3'
         ELSE 'WAV'
-      END                                             AS FILE_TYPE,
-      METADATA$START_SCAN_TIME                        AS S3_EVENT_TIME
+      END                          AS FILE_TYPE,
+      METADATA$START_SCAN_TIME     AS S3_EVENT_TIME
     FROM @RAW.S3_MEDICAL_AUDIO
   )
   FILE_FORMAT = (FORMAT_NAME = 'RAW.METADATA_ONLY_FORMAT');
 
--- Get SQS queue ARN for this pipe
-DESC PIPE RAW.PIPE_MEDICAL_AUDIO;
-
 -----------------------------------------------------------------------
--- 6. GET SQS QUEUE ARNs FROM ALL PIPES
+-- 6. GET SQS QUEUE ARNs
 --    The notification_channel column contains the Snowflake-managed
---    SQS queue ARN. You need this for configuring S3 event notifications.
---
---    All 3 pipes share the SAME SQS queue ARN (Snowflake manages one
---    SQS queue per account). Copy this ARN for the S3 setup step.
+--    SQS queue ARN. All pipes share the same ARN per account.
+--    Copy this ARN for S3 event notification setup.
 -----------------------------------------------------------------------
 SHOW PIPES IN SCHEMA RAW;
 
--- Look at the notification_channel column in the output.
--- It will look like: arn:aws:sqs:us-east-1:123456789012:sf-snowpipe-AIDXYZ-HASH
--- Save this value -- you need it in Step 5 of 10_aws_setup_guide.sql.
+-- Per-pipe details:
+DESC PIPE RAW.PIPE_MEDICAL_DOCS;
+DESC PIPE RAW.PIPE_MEDICAL_TXT;
+DESC PIPE RAW.PIPE_MEDICAL_AUDIO;
 
 -----------------------------------------------------------------------
--- 7. STREAM on FILES_LOG -- captures new inserts
+-- 7. STREAM on FILES_LOG -- captures new inserts for processing
 -----------------------------------------------------------------------
 CREATE OR REPLACE STREAM RAW.FILES_LOG_STREAM
   ON TABLE RAW.FILES_LOG
@@ -149,9 +131,7 @@ CREATE OR REPLACE STREAM RAW.FILES_LOG_STREAM
 -----------------------------------------------------------------------
 SHOW PIPES IN SCHEMA RAW;
 SHOW STREAMS IN SCHEMA RAW;
-SHOW TASKS IN SCHEMA RAW;
 
--- Check pipe status
 SELECT SYSTEM$PIPE_STATUS('RAW.PIPE_MEDICAL_DOCS')  AS DOCS_PIPE_STATUS;
 SELECT SYSTEM$PIPE_STATUS('RAW.PIPE_MEDICAL_TXT')   AS TXT_PIPE_STATUS;
 SELECT SYSTEM$PIPE_STATUS('RAW.PIPE_MEDICAL_AUDIO') AS AUDIO_PIPE_STATUS;

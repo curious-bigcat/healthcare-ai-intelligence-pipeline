@@ -1,9 +1,11 @@
 /*=============================================================================
-  05 - STRUCTURED DATA: Patients, Providers, Claims & Appointments
+  09 - STRUCTURED DATA: Providers, Patients, Claims & Appointments
   Healthcare AI Intelligence Pipeline
 
-  This is the structured/transactional data that Cortex Analyst will
-  query via the semantic view. Includes sample data for demo purposes.
+  Structured/transactional data that Cortex Analyst will query via the
+  semantic view. Includes synthetic sample data for demo purposes.
+
+  Depends on: 01 (database/schemas)
 =============================================================================*/
 
 USE ROLE ACCOUNTADMIN;

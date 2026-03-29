@@ -1,14 +1,14 @@
 /*=============================================================================
-  08 - SEMANTIC VIEW FOR CORTEX ANALYST
+  12 - SEMANTIC VIEW FOR CORTEX ANALYST
   Healthcare AI Intelligence Pipeline
 
-  This semantic view enables natural-language queries over:
+  Enables natural-language queries over structured healthcare data:
     - Patient demographics and registration
     - Provider directory and specialties
     - Claims data (billing, diagnosis, procedures, status)
     - Appointments (scheduling, visit types, recording status)
-    - AI-processed document metrics (PDF intelligence)
-    - AI-processed audio metrics (consultation intelligence)
+
+  Depends on: 09 (structured data tables)
 =============================================================================*/
 
 USE ROLE ACCOUNTADMIN;
@@ -20,10 +20,10 @@ USE WAREHOUSE HEALTHCARE_AI_WH;
 -- SEMANTIC VIEW
 -----------------------------------------------------------------------
 CREATE OR REPLACE SEMANTIC VIEW ANALYTICS.HEALTHCARE_ANALYTICS
-  COMMENT = 'Healthcare analytics semantic view for Cortex Analyst. Covers patients, providers, claims, appointments, and AI-processed document/audio intelligence.'
+  COMMENT = 'Healthcare analytics semantic view for Cortex Analyst. Covers patients, providers, claims, and appointments.'
 AS
-  -- PATIENTS table
   TABLES (
+    -- PATIENTS table
     ANALYTICS.PATIENTS
       WITH SEMANTICS (
         PATIENT_ID IDENTIFIER 'Unique patient identifier',

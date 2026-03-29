@@ -1,10 +1,9 @@
 /*=============================================================================
-  10 - AWS SETUP GUIDE: S3 Bucket, IAM Role, S3 Event Notifications -> SQS
+  14 - AWS SETUP GUIDE: S3 Bucket, IAM Role, S3 Event Notifications -> SQS
   Healthcare AI Intelligence Pipeline
 
-  This file documents the AWS-side configuration required to complete
-  the auto-ingest pipeline. Run these commands in AWS CLI or configure
-  via the AWS Console.
+  AWS-side configuration required to complete the auto-ingest pipeline.
+  Run these commands in AWS CLI or configure via the AWS Console.
 
   Architecture (using Snowflake-managed SQS):
     S3 (file upload) -> S3 Event Notification -> SQS (Snowflake-managed) -> Snowpipe
@@ -19,12 +18,9 @@
 -- STEP 1: CREATE S3 BUCKET
 -----------------------------------------------------------------------
 /*
-  Run in AWS CLI:
-
   aws s3 mb s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID> --region us-east-1
 
   Create the folder structure:
-
   aws s3api put-object --bucket healthcare-ai-demo-<YOUR_ACCOUNT_ID> --key healthcare/pdfs/
   aws s3api put-object --bucket healthcare-ai-demo-<YOUR_ACCOUNT_ID> --key healthcare/txt/
   aws s3api put-object --bucket healthcare-ai-demo-<YOUR_ACCOUNT_ID> --key healthcare/audio/
@@ -94,13 +90,13 @@
     --policy-arn arn:aws:iam::<YOUR_AWS_ACCOUNT_ID>:policy/SnowflakeHealthcareS3Access
 
   Note the Role ARN: arn:aws:iam::<YOUR_AWS_ACCOUNT_ID>:role/SnowflakeHealthcareRole
-  Use this in 01_setup_database.sql for STORAGE_AWS_ROLE_ARN.
+  Use this in 02_s3_integration_and_stages.sql for STORAGE_AWS_ROLE_ARN.
 */
 
 -----------------------------------------------------------------------
 -- STEP 4: GET SNOWFLAKE IAM USER ARN & EXTERNAL ID
 -----------------------------------------------------------------------
--- After running 01_setup_database.sql, execute:
+-- After running 02_s3_integration_and_stages.sql, execute:
 DESCRIBE INTEGRATION HEALTHCARE_S3_INTEGRATION;
 -- Record: STORAGE_AWS_IAM_USER_ARN and STORAGE_AWS_EXTERNAL_ID
 -- Update the trust policy in Step 3 with these values, then:
@@ -112,21 +108,16 @@ DESCRIBE INTEGRATION HEALTHCARE_S3_INTEGRATION;
 
 -----------------------------------------------------------------------
 -- STEP 5: CONFIGURE S3 EVENT NOTIFICATIONS -> SNOWFLAKE SQS QUEUE
---
---   Snowpipe AUTO_INGEST provisions an SQS queue managed by Snowflake.
---   After creating the pipes in 02_landing_zone.sql, get the SQS ARN:
 -----------------------------------------------------------------------
+-- After creating pipes in 03_file_ingestion.sql, get the SQS ARN:
 SHOW PIPES IN DATABASE HEALTHCARE_AI_DEMO;
--- Look at the notification_channel column. It will look like:
--- arn:aws:sqs:us-east-1:123456789012:sf-snowpipe-AIDXYZ-HASH
---
+-- Look at the notification_channel column for the SQS queue ARN.
 -- All pipes in the same account share the same SQS queue ARN.
--- Copy this ARN for the S3 event notification configuration below.
 
 /*
-  OPTION A: AWS CLI — Configure S3 event notifications to Snowflake's SQS queue
+  OPTION A: AWS CLI
 
-  Create a notification config file (s3-event-notification.json):
+  Create s3-event-notification.json:
 
   {
     "QueueConfigurations": [
@@ -199,7 +190,7 @@ SHOW PIPES IN DATABASE HEALTHCARE_AI_DEMO;
 */
 
 -----------------------------------------------------------------------
--- STEP 6: VERIFY S3 EVENT NOTIFICATIONS ARE CONFIGURED
+-- STEP 6: VERIFY S3 EVENT NOTIFICATIONS
 -----------------------------------------------------------------------
 /*
   aws s3api get-bucket-notification-configuration \
@@ -210,35 +201,23 @@ SHOW PIPES IN DATABASE HEALTHCARE_AI_DEMO;
 */
 
 -----------------------------------------------------------------------
--- STEP 7: TEST THE PIPELINE
+-- STEP 7: UPLOAD SAMPLE FILES TO TEST
 -----------------------------------------------------------------------
 /*
-  Upload sample files to trigger auto-ingest:
-
-  aws s3 cp sample_files/pdfs/ s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/pdfs/ --recursive
-  aws s3 cp sample_files/txt/ s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/txt/ --recursive
+  aws s3 cp sample_files/pdfs/  s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/pdfs/  --recursive
+  aws s3 cp sample_files/txt/   s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/txt/   --recursive
   aws s3 cp sample_files/audio/ s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/audio/ --recursive
-
-  Then verify in Snowflake:
 */
 
--- Check pipe status (should show pendingFileCount > 0 shortly after upload)
+-- Check pipe status after upload:
 SELECT SYSTEM$PIPE_STATUS('HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_DOCS')  AS DOCS_STATUS;
 SELECT SYSTEM$PIPE_STATUS('HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_TXT')   AS TXT_STATUS;
 SELECT SYSTEM$PIPE_STATUS('HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_AUDIO') AS AUDIO_STATUS;
 
--- Check files landed in FILES_LOG
+-- Check files landed:
 SELECT * FROM HEALTHCARE_AI_DEMO.RAW.FILES_LOG ORDER BY LANDED_AT DESC;
 
--- Check stream has data for processing
-SELECT SYSTEM$STREAM_HAS_DATA('HEALTHCARE_AI_DEMO.RAW.FILES_LOG_STREAM') AS READY;
-
--- If auto-ingest hasn't triggered, manually refresh pipes:
--- ALTER PIPE HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_DOCS  REFRESH;
--- ALTER PIPE HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_TXT   REFRESH;
--- ALTER PIPE HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_AUDIO REFRESH;
-
--- Check copy history for errors
+-- Check copy history for errors:
 SELECT PIPE_NAME, FILE_NAME, STATUS, ROW_COUNT, ERROR_MESSAGE, LAST_LOAD_TIME
 FROM TABLE(INFORMATION_SCHEMA.COPY_HISTORY(
   TABLE_NAME   => 'HEALTHCARE_AI_DEMO.RAW.FILES_LOG',
@@ -248,30 +227,16 @@ ORDER BY LAST_LOAD_TIME DESC
 LIMIT 20;
 
 -----------------------------------------------------------------------
--- STEP 8: RESUME THE PROCESSING TASK
+-- STEP 8: RESUME PIPES AND TASK
 -----------------------------------------------------------------------
--- Once files are landing successfully in FILES_LOG:
+ALTER PIPE HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_DOCS  SET PIPE_EXECUTION_PAUSED = FALSE;
+ALTER PIPE HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_TXT   SET PIPE_EXECUTION_PAUSED = FALSE;
+ALTER PIPE HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_AUDIO SET PIPE_EXECUTION_PAUSED = FALSE;
+
 ALTER TASK HEALTHCARE_AI_DEMO.RAW.PROCESS_NEW_FILES_TASK RESUME;
 
--- Verify task is running
+-- Verify:
 SHOW TASKS LIKE 'PROCESS_NEW_FILES_TASK' IN SCHEMA HEALTHCARE_AI_DEMO.RAW;
-
------------------------------------------------------------------------
--- SNOWFLAKE INTELLIGENCE SETUP (UI Steps)
------------------------------------------------------------------------
-/*
-  1. Navigate to Snowflake Intelligence in the Snowsight UI
-  2. Click "New Agent" or go to the existing SNOWFLAKE_INTELLIGENCE database
-  3. Configure a new agent:
-     - Name: Healthcare Intelligence
-     - Agent: HEALTHCARE_AI_DEMO.ANALYTICS.HEALTHCARE_INTELLIGENCE_AGENT
-  4. The agent automatically inherits the 3 tools:
-     - HealthcareAnalyst (structured queries via semantic view)
-     - DocumentSearch (search parsed medical documents)
-     - AudioSearch (search transcribed consultations)
-  5. Test with sample questions from the agent definition
-  6. Share with your team as needed
-*/
 
 -----------------------------------------------------------------------
 -- TROUBLESHOOTING
