@@ -110,7 +110,7 @@ SELECT
   d.RELATIVE_PATH                         AS FILE_NAME,
   LEFT(
     AI_COMPLETE(
-      'claude-3.5-sonnet',
+      'claude-3-5-sonnet',
       CONCAT('Return the first 500 characters of this document exactly as-is:\n\n',
         TO_VARCHAR(TO_FILE('@RAW.S3_MEDICAL_TXT', d.RELATIVE_PATH)))
     ), 500

@@ -98,32 +98,21 @@ BEGIN
           'Lab Results Discussion', 'Mental Health Session',
           'Insurance Discussion', 'Emergency Consultation'
         )
-      ):label::VARCHAR                                      AS CALL_CATEGORY,
+      ):labels[0]::VARCHAR                                  AS CALL_CATEGORY,
 
-      AI_CLASSIFY(
-        t.RAW_TRANSCRIPT:text::VARCHAR,
-        ARRAY_CONSTRUCT(
-          'Initial Consultation', 'Follow-Up Visit',
-          'Specialist Referral', 'Prescription Review',
-          'Lab Results Discussion', 'Mental Health Session',
-          'Insurance Discussion', 'Emergency Consultation'
-        )
-      ):score::FLOAT                                        AS CALL_CATEGORY_CONFIDENCE,
+      NULL::FLOAT                                           AS CALL_CATEGORY_CONFIDENCE,
 
       -----------------------------------------------------------
       -- 5. AI_SENTIMENT — overall + multi-dimensional
       -----------------------------------------------------------
-      AI_SENTIMENT(t.RAW_TRANSCRIPT:text::VARCHAR)          AS SENTIMENT_SCORE,
+      SNOWFLAKE.CORTEX.SENTIMENT(t.RAW_TRANSCRIPT:text::VARCHAR) AS SENTIMENT_SCORE,
 
-      AI_SENTIMENT(
-        t.RAW_TRANSCRIPT:text::VARCHAR,
-        ARRAY_CONSTRUCT('empathy', 'clinical_clarity', 'patient_anxiety', 'resolution')
-      )                                                     AS SENTIMENT_DIMENSIONS,
+      AI_SENTIMENT(t.RAW_TRANSCRIPT:text::VARCHAR)          AS SENTIMENT_DIMENSIONS,
 
       -----------------------------------------------------------
       -- 6. AI_SUMMARIZE — executive summary
       -----------------------------------------------------------
-      AI_SUMMARIZE(t.RAW_TRANSCRIPT:text::VARCHAR)          AS SUMMARY,
+      SNOWFLAKE.CORTEX.SUMMARIZE(t.RAW_TRANSCRIPT:text::VARCHAR) AS SUMMARY,
 
       -----------------------------------------------------------
       -- 7. AI_TRANSLATE — detect language + translate if needed
@@ -132,14 +121,14 @@ BEGIN
         t.RAW_TRANSCRIPT:text::VARCHAR,
         ARRAY_CONSTRUCT('English', 'Spanish', 'French', 'German',
                         'Portuguese', 'Chinese', 'Japanese', 'Korean', 'Arabic')
-      ):label::VARCHAR                                      AS DETECTED_LANGUAGE,
+      ):labels[0]::VARCHAR                                  AS DETECTED_LANGUAGE,
 
       CASE
         WHEN AI_CLASSIFY(
           t.RAW_TRANSCRIPT:text::VARCHAR,
           ARRAY_CONSTRUCT('English', 'Spanish', 'French', 'German',
                           'Portuguese', 'Chinese', 'Japanese', 'Korean', 'Arabic')
-        ):label::VARCHAR != 'English'
+        ):labels[0]::VARCHAR != 'English'
         THEN AI_TRANSLATE(t.RAW_TRANSCRIPT:text::VARCHAR, '', 'en')
         ELSE NULL
       END                                                   AS TRANSLATED_TRANSCRIPT,
@@ -148,7 +137,7 @@ BEGIN
       -- 8. AI_COMPLETE — structured SOAP consultation notes
       -----------------------------------------------------------
       AI_COMPLETE(
-        'claude-3.5-sonnet',
+        'claude-3-5-sonnet',
         CONCAT(
           'You are a medical scribe. Given the following patient consultation transcript, ',
           'generate structured SOAP notes (Subjective, Objective, Assessment, Plan). ',

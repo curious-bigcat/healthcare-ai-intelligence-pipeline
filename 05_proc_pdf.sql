@@ -93,23 +93,14 @@ BEGIN
           'Radiology Report', 'Insurance Claim', 'Referral Letter',
           'Clinical Notes', 'Pathology Report'
         )
-      ):label::VARCHAR                                      AS DOC_CATEGORY,
+      ):labels[0]::VARCHAR                                  AS DOC_CATEGORY,
 
-      AI_CLASSIFY(
-        AI_PARSE_DOCUMENT(
-          TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
-        ):content::VARCHAR,
-        ARRAY_CONSTRUCT(
-          'Lab Report', 'Discharge Summary', 'Prescription',
-          'Radiology Report', 'Insurance Claim', 'Referral Letter',
-          'Clinical Notes', 'Pathology Report'
-        )
-      ):score::FLOAT                                        AS DOC_CATEGORY_CONFIDENCE,
+      NULL::FLOAT                                           AS DOC_CATEGORY_CONFIDENCE,
 
       -----------------------------------------------------------
       -- 5. AI_SENTIMENT — overall + multi-dimensional
       -----------------------------------------------------------
-      AI_SENTIMENT(
+      SNOWFLAKE.CORTEX.SENTIMENT(
         AI_PARSE_DOCUMENT(
           TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
         ):content::VARCHAR
@@ -118,14 +109,13 @@ BEGIN
       AI_SENTIMENT(
         AI_PARSE_DOCUMENT(
           TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
-        ):content::VARCHAR,
-        ARRAY_CONSTRUCT('urgency', 'clinical_concern', 'patient_satisfaction')
+        ):content::VARCHAR
       )                                                     AS SENTIMENT_DIMENSIONS,
 
       -----------------------------------------------------------
       -- 6. AI_SUMMARIZE — concise summary
       -----------------------------------------------------------
-      AI_SUMMARIZE(
+      SNOWFLAKE.CORTEX.SUMMARIZE(
         AI_PARSE_DOCUMENT(
           TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
         ):content::VARCHAR
@@ -140,7 +130,7 @@ BEGIN
         ):content::VARCHAR,
         ARRAY_CONSTRUCT('English', 'Spanish', 'French', 'German',
                         'Portuguese', 'Chinese', 'Japanese', 'Korean', 'Arabic')
-      ):label::VARCHAR                                      AS DETECTED_LANGUAGE,
+      ):labels[0]::VARCHAR                                  AS DETECTED_LANGUAGE,
 
       CASE
         WHEN AI_CLASSIFY(
@@ -149,7 +139,7 @@ BEGIN
           ):content::VARCHAR,
           ARRAY_CONSTRUCT('English', 'Spanish', 'French', 'German',
                           'Portuguese', 'Chinese', 'Japanese', 'Korean', 'Arabic')
-        ):label::VARCHAR != 'English'
+        ):labels[0]::VARCHAR != 'English'
         THEN AI_TRANSLATE(
           AI_PARSE_DOCUMENT(
             TO_FILE('@RAW.S3_MEDICAL_DOCS', f.FILE_NAME), 'OCR'
@@ -173,7 +163,7 @@ BEGIN
       -- 9. AI_COMPLETE — key insights and action items
       -----------------------------------------------------------
       AI_COMPLETE(
-        'claude-3.5-sonnet',
+        'claude-3-5-sonnet',
         CONCAT(
           'You are a medical document analyst. Given the following medical document, ',
           'provide: 1) Three key clinical insights, 2) Any urgent action items, ',

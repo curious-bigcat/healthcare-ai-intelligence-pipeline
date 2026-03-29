@@ -47,7 +47,7 @@ BEGIN
       f.FILE_NAME,
       -- Read TXT file content via AI_COMPLETE with pass-through prompt
       AI_COMPLETE(
-        'claude-3.5-sonnet',
+        'claude-3-5-sonnet',
         CONCAT('Return the following medical document text exactly as-is, with no modifications:\n\n',
           TO_VARCHAR(TO_FILE('@RAW.S3_MEDICAL_TXT', f.FILE_NAME)))
       )                                                     AS FILE_TEXT
@@ -93,32 +93,21 @@ BEGIN
           'Clinical Notes', 'Pathology Report',
           'Patient Intake Form', 'Nursing Notes'
         )
-      ):label::VARCHAR                                      AS DOC_CATEGORY,
+      ):labels[0]::VARCHAR                                  AS DOC_CATEGORY,
 
-      AI_CLASSIFY(
-        t.FILE_TEXT,
-        ARRAY_CONSTRUCT(
-          'Lab Report', 'Discharge Summary', 'Prescription',
-          'Radiology Report', 'Insurance Claim', 'Referral Letter',
-          'Clinical Notes', 'Pathology Report',
-          'Patient Intake Form', 'Nursing Notes'
-        )
-      ):score::FLOAT                                        AS DOC_CATEGORY_CONFIDENCE,
+      NULL::FLOAT                                           AS DOC_CATEGORY_CONFIDENCE,
 
       -----------------------------------------------------------
       -- 3. AI_SENTIMENT — overall + multi-dimensional
       -----------------------------------------------------------
-      AI_SENTIMENT(t.FILE_TEXT)                              AS SENTIMENT_SCORE,
+      SNOWFLAKE.CORTEX.SENTIMENT(t.FILE_TEXT)               AS SENTIMENT_SCORE,
 
-      AI_SENTIMENT(
-        t.FILE_TEXT,
-        ARRAY_CONSTRUCT('urgency', 'clinical_concern', 'patient_satisfaction')
-      )                                                     AS SENTIMENT_DIMENSIONS,
+      AI_SENTIMENT(t.FILE_TEXT)                              AS SENTIMENT_DIMENSIONS,
 
       -----------------------------------------------------------
       -- 4. AI_SUMMARIZE — concise summary
       -----------------------------------------------------------
-      AI_SUMMARIZE(t.FILE_TEXT)                              AS SUMMARY,
+      SNOWFLAKE.CORTEX.SUMMARIZE(t.FILE_TEXT)               AS SUMMARY,
 
       -----------------------------------------------------------
       -- 5. AI_TRANSLATE — detect language + translate if needed
@@ -127,14 +116,14 @@ BEGIN
         t.FILE_TEXT,
         ARRAY_CONSTRUCT('English', 'Spanish', 'French', 'German',
                         'Portuguese', 'Chinese', 'Japanese', 'Korean', 'Arabic')
-      ):label::VARCHAR                                      AS DETECTED_LANGUAGE,
+      ):labels[0]::VARCHAR                                  AS DETECTED_LANGUAGE,
 
       CASE
         WHEN AI_CLASSIFY(
           t.FILE_TEXT,
           ARRAY_CONSTRUCT('English', 'Spanish', 'French', 'German',
                           'Portuguese', 'Chinese', 'Japanese', 'Korean', 'Arabic')
-        ):label::VARCHAR != 'English'
+        ):labels[0]::VARCHAR != 'English'
         THEN AI_TRANSLATE(t.FILE_TEXT, '', 'en')
         ELSE NULL
       END                                                   AS TRANSLATED_TEXT,
@@ -148,7 +137,7 @@ BEGIN
       -- 7. AI_COMPLETE — key insights and action items
       -----------------------------------------------------------
       AI_COMPLETE(
-        'claude-3.5-sonnet',
+        'claude-3-5-sonnet',
         CONCAT(
           'You are a medical document analyst. Given the following medical document, ',
           'provide: 1) Three key clinical insights, 2) Any urgent action items, ',
