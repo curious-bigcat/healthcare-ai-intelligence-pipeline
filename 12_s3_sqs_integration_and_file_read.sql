@@ -1,22 +1,31 @@
 /*=============================================================================
-  12 - S3 INTEGRATION, SNS NOTIFICATION INTEGRATION & FILE READ VERIFICATION
+  12 - S3 STORAGE INTEGRATION, SQS AUTO-INGEST & FILE READ VERIFICATION
   Healthcare AI Intelligence Pipeline
 
   This file provides ALL the Snowflake-side SQL steps needed to:
     1. Create and verify the S3 storage integration
-    2. Create and verify the SNS notification integration
-    3. Read/list files from S3 stages to confirm connectivity
-    4. Validate that files are accessible before AI processing
+    2. Create external stages linked to S3
+    3. Set up Snowpipe auto-ingest via SQS (Snowflake-managed)
+    4. Get the SQS queue ARN for S3 event notification configuration
+    5. Read/list files from S3 stages to confirm connectivity
+    6. Validate that files are accessible before AI processing
 
-  Run AFTER 01_setup_database.sql (which creates the database, schemas,
-  warehouse, and stages) and AFTER completing the AWS-side setup in
-  10_aws_setup_guide.sql.
+  HOW SNOWPIPE AUTO-INGEST WORKS ON AWS:
+    - When you create a pipe with AUTO_INGEST = TRUE, Snowflake automatically
+      provisions an Amazon SQS queue in Snowflake's AWS account.
+    - You configure your S3 bucket to send event notifications to this
+      Snowflake-managed SQS queue.
+    - When a file lands in S3, the event notification goes to SQS, which
+      triggers Snowpipe to load the data.
+    - No SNS topic, EventBridge rule, or notification integration is needed.
+
+  Flow: S3 (file upload) -> S3 Event Notification -> SQS (Snowflake-managed) -> Snowpipe
+
+  Run AFTER 01_setup_database.sql and the AWS IAM setup in 10_aws_setup_guide.sql.
 
   IMPORTANT: Replace these placeholders before running:
     <YOUR_S3_BUCKET_NAME>     -> your actual S3 bucket name
-    <YOUR_AWS_ACCOUNT_ID>     -> your 12-digit AWS account ID
     <YOUR_AWS_IAM_ROLE_ARN>   -> arn:aws:iam::<account_id>:role/SnowflakeHealthcareRole
-    <YOUR_SNS_TOPIC_ARN>      -> arn:aws:sns:us-east-1:<account_id>:healthcare-ai-file-notifications
 =============================================================================*/
 
 USE ROLE ACCOUNTADMIN;
@@ -25,7 +34,7 @@ USE WAREHOUSE HEALTHCARE_AI_WH;
 
 /*=========================================================================
   SECTION 1: S3 STORAGE INTEGRATION
-  
+
   This creates the trust relationship between Snowflake and your AWS S3
   bucket. Snowflake assumes an IAM role in your account to read files.
 =========================================================================*/
@@ -42,7 +51,7 @@ CREATE OR REPLACE STORAGE INTEGRATION HEALTHCARE_S3_INTEGRATION
   COMMENT = 'Storage integration for Healthcare AI demo S3 bucket';
 
 -----------------------------------------------------------------------
--- 1B. DESCRIBE INTEGRATION — get Snowflake's IAM user ARN & external ID
+-- 1B. DESCRIBE INTEGRATION -- get Snowflake's IAM user ARN & external ID
 --     You MUST update your AWS IAM role trust policy with these values.
 -----------------------------------------------------------------------
 DESCRIBE INTEGRATION HEALTHCARE_S3_INTEGRATION;
@@ -50,7 +59,7 @@ DESCRIBE INTEGRATION HEALTHCARE_S3_INTEGRATION;
 -- Record these two values from the output:
 --   STORAGE_AWS_IAM_USER_ARN   -> e.g. arn:aws:iam::123456789012:user/abc1-b-self1234
 --   STORAGE_AWS_EXTERNAL_ID    -> e.g. ABC12345_SFCRole=2_abcdefg123456
-
+--
 -- Then update your AWS IAM role trust policy (see 10_aws_setup_guide.sql Step 4):
 --   aws iam update-assume-role-policy \
 --     --role-name SnowflakeHealthcareRole \
@@ -74,7 +83,7 @@ GRANT USAGE ON INTEGRATION HEALTHCARE_S3_INTEGRATION TO ROLE SYSADMIN;
 
 /*=========================================================================
   SECTION 2: EXTERNAL STAGES (linked to the storage integration)
-  
+
   Three stages, one per file type prefix in S3.
 =========================================================================*/
 
@@ -106,88 +115,24 @@ SHOW STAGES IN SCHEMA RAW;
 
 
 /*=========================================================================
-  SECTION 3: SNS NOTIFICATION INTEGRATION
-  
-  This allows Snowpipe to subscribe to your SNS topic and receive
-  notifications when new files land in S3 via EventBridge.
-  
-  Flow: S3 -> EventBridge -> SNS -> Snowpipe (auto_ingest)
+  SECTION 3: SNOWPIPE AUTO-INGEST VIA SQS
+
+  When pipes are created with AUTO_INGEST = TRUE, Snowflake provisions
+  an SQS queue automatically. You then configure your S3 bucket to send
+  event notifications to that SQS queue.
+
+  Steps:
+    A. Create the pipes
+    B. Run SHOW PIPES to get the notification_channel (SQS queue ARN)
+    C. Configure S3 bucket event notifications pointing to that SQS ARN
 =========================================================================*/
 
 -----------------------------------------------------------------------
--- 3A. GET THE SNS IAM POLICY THAT SNOWFLAKE NEEDS
---     Run this to generate the policy JSON. You must apply this policy
---     to your SNS topic in AWS (see 10_aws_setup_guide.sql Step 7).
------------------------------------------------------------------------
-SELECT SYSTEM$GET_AWS_SNS_IAM_POLICY(
-  'arn:aws:sns:us-east-1:<YOUR_AWS_ACCOUNT_ID>:healthcare-ai-file-notifications'
-) AS SNS_IAM_POLICY;
-
--- The output will look like:
--- {
---   "Version": "2012-10-17",
---   "Statement": [{
---     "Sid": "1",
---     "Effect": "Allow",
---     "Principal": {"AWS": "arn:aws:iam::123456789012:user/..."},
---     "Action": ["sns:subscribe"],
---     "Resource": ["arn:aws:sns:us-east-1:...:healthcare-ai-file-notifications"]
---   }]
--- }
---
--- IMPORTANT: Merge this with the EventBridge publish policy on your SNS topic.
--- See 10_aws_setup_guide.sql Step 7 for the full combined policy.
-
------------------------------------------------------------------------
--- 3B. CREATE NOTIFICATION INTEGRATION
---     This is the Snowflake object that subscribes to SNS.
------------------------------------------------------------------------
-CREATE OR REPLACE NOTIFICATION INTEGRATION HEALTHCARE_SNS_NOTIFICATION
-  ENABLED            = TRUE
-  TYPE               = QUEUE
-  NOTIFICATION_PROVIDER = AWS_SNS
-  DIRECTION          = INBOUND
-  AWS_SNS_TOPIC_ARN  = 'arn:aws:sns:us-east-1:<YOUR_AWS_ACCOUNT_ID>:healthcare-ai-file-notifications'
-  AWS_SNS_ROLE_ARN   = '<YOUR_AWS_IAM_ROLE_ARN>'
-  COMMENT = 'SNS notification integration for S3 file arrival events via EventBridge';
-
------------------------------------------------------------------------
--- 3C. DESCRIBE NOTIFICATION INTEGRATION
------------------------------------------------------------------------
-DESCRIBE NOTIFICATION INTEGRATION HEALTHCARE_SNS_NOTIFICATION;
-
--- Record the SF_AWS_IAM_USER_ARN and SF_AWS_EXTERNAL_ID if different
--- from the storage integration values.
-
------------------------------------------------------------------------
--- 3D. VERIFY NOTIFICATION INTEGRATION
------------------------------------------------------------------------
-SHOW NOTIFICATION INTEGRATIONS;
-
-SELECT "name", "type", "enabled", "created_on"
-FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
-WHERE "name" = 'HEALTHCARE_SNS_NOTIFICATION';
-
------------------------------------------------------------------------
--- 3E. GRANT USAGE ON NOTIFICATION INTEGRATION
------------------------------------------------------------------------
-GRANT USAGE ON INTEGRATION HEALTHCARE_SNS_NOTIFICATION TO ROLE SYSADMIN;
-
-
-/*=========================================================================
-  SECTION 4: SNOWPIPES WITH SNS AUTO-INGEST
-  
-  These pipes use AWS_SNS_TOPIC to automatically trigger when new files
-  land in S3. Each pipe handles one file type prefix.
-=========================================================================*/
-
------------------------------------------------------------------------
--- 4A. SNOWPIPE FOR PDFs
+-- 3A. CREATE SNOWPIPES
 -----------------------------------------------------------------------
 CREATE OR REPLACE PIPE RAW.PIPE_MEDICAL_DOCS
   AUTO_INGEST = TRUE
-  AWS_SNS_TOPIC = 'arn:aws:sns:us-east-1:<YOUR_AWS_ACCOUNT_ID>:healthcare-ai-file-notifications'
-  COMMENT = 'Auto-ingest pipe for PDF medical documents from S3'
+  COMMENT = 'Auto-ingest pipe for PDF medical documents from S3 via SQS'
 AS
   COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, FILE_SIZE_BYTES, S3_EVENT_TIME)
   FROM (
@@ -201,13 +146,9 @@ AS
   )
   FILE_FORMAT = (TYPE = 'JSON');
 
------------------------------------------------------------------------
--- 4B. SNOWPIPE FOR TXT FILES
------------------------------------------------------------------------
 CREATE OR REPLACE PIPE RAW.PIPE_MEDICAL_TXT
   AUTO_INGEST = TRUE
-  AWS_SNS_TOPIC = 'arn:aws:sns:us-east-1:<YOUR_AWS_ACCOUNT_ID>:healthcare-ai-file-notifications'
-  COMMENT = 'Auto-ingest pipe for TXT medical documents from S3'
+  COMMENT = 'Auto-ingest pipe for TXT medical documents from S3 via SQS'
 AS
   COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, FILE_SIZE_BYTES, S3_EVENT_TIME)
   FROM (
@@ -221,13 +162,9 @@ AS
   )
   FILE_FORMAT = (TYPE = 'JSON');
 
------------------------------------------------------------------------
--- 4C. SNOWPIPE FOR AUDIO (WAV and MP3)
------------------------------------------------------------------------
 CREATE OR REPLACE PIPE RAW.PIPE_MEDICAL_AUDIO
   AUTO_INGEST = TRUE
-  AWS_SNS_TOPIC = 'arn:aws:sns:us-east-1:<YOUR_AWS_ACCOUNT_ID>:healthcare-ai-file-notifications'
-  COMMENT = 'Auto-ingest pipe for WAV/MP3 audio consultations from S3'
+  COMMENT = 'Auto-ingest pipe for WAV/MP3 audio consultations from S3 via SQS'
 AS
   COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, FILE_SIZE_BYTES, S3_EVENT_TIME)
   FROM (
@@ -245,25 +182,57 @@ AS
   FILE_FORMAT = (TYPE = 'JSON');
 
 -----------------------------------------------------------------------
--- 4D. VERIFY PIPES & GET SNS SUBSCRIPTION STATUS
+-- 3B. GET THE SQS QUEUE ARN (notification_channel)
+--     This is the Snowflake-managed SQS queue. All pipes in the same
+--     account share the same SQS queue ARN.
+--
+--     IMPORTANT: Copy this ARN -- you need it to configure S3 bucket
+--     event notifications in AWS (see 10_aws_setup_guide.sql Step 5).
 -----------------------------------------------------------------------
 SHOW PIPES IN SCHEMA RAW;
 
+-- The notification_channel column contains the SQS queue ARN.
+-- It looks like: arn:aws:sqs:us-east-1:123456789012:sf-snowpipe-AIDXYZ-HASH
+--
+-- You can also get it per pipe:
+DESC PIPE RAW.PIPE_MEDICAL_DOCS;
+DESC PIPE RAW.PIPE_MEDICAL_TXT;
+DESC PIPE RAW.PIPE_MEDICAL_AUDIO;
+
+-----------------------------------------------------------------------
+-- 3C. VERIFY PIPE STATUS
+-----------------------------------------------------------------------
 SELECT SYSTEM$PIPE_STATUS('RAW.PIPE_MEDICAL_DOCS')  AS DOCS_PIPE_STATUS;
 SELECT SYSTEM$PIPE_STATUS('RAW.PIPE_MEDICAL_TXT')   AS TXT_PIPE_STATUS;
 SELECT SYSTEM$PIPE_STATUS('RAW.PIPE_MEDICAL_AUDIO') AS AUDIO_PIPE_STATUS;
 
+-----------------------------------------------------------------------
+-- 3D. CONFIGURE S3 EVENT NOTIFICATIONS (AWS side)
+--     After getting the SQS ARN above, configure your S3 bucket to
+--     send ObjectCreated events to that queue. See 10_aws_setup_guide.sql
+--     Step 5 for full AWS CLI and Console instructions.
+--
+--     Summary:
+--       aws s3api put-bucket-notification-configuration \
+--         --bucket <YOUR_S3_BUCKET_NAME> \
+--         --notification-configuration file://s3-event-notification.json
+--
+--     The JSON file should contain QueueConfigurations pointing the
+--     SQS ARN with prefix filters for healthcare/pdfs/, healthcare/txt/,
+--     and healthcare/audio/.
+-----------------------------------------------------------------------
+
 
 /*=========================================================================
-  SECTION 5: READ & LIST FILES FROM S3 STAGES
-  
+  SECTION 4: READ & LIST FILES FROM S3 STAGES
+
   These queries verify that Snowflake can successfully access your S3
   bucket through the storage integration. Run these AFTER uploading
   sample files to S3.
 =========================================================================*/
 
 -----------------------------------------------------------------------
--- 5A. LIST FILES ON EACH STAGE
+-- 4A. LIST FILES ON EACH STAGE
 --     Confirms S3 connectivity and IAM permissions are working.
 -----------------------------------------------------------------------
 LIST @RAW.S3_MEDICAL_DOCS;
@@ -271,7 +240,7 @@ LIST @RAW.S3_MEDICAL_TXT;
 LIST @RAW.S3_MEDICAL_AUDIO;
 
 -----------------------------------------------------------------------
--- 5B. COUNT FILES PER STAGE
+-- 4B. COUNT FILES PER STAGE
 -----------------------------------------------------------------------
 SELECT 'PDFs'  AS FILE_TYPE, COUNT(*) AS FILE_COUNT FROM DIRECTORY(@RAW.S3_MEDICAL_DOCS)
 UNION ALL
@@ -280,7 +249,7 @@ UNION ALL
 SELECT 'Audio' AS FILE_TYPE, COUNT(*) AS FILE_COUNT FROM DIRECTORY(@RAW.S3_MEDICAL_AUDIO);
 
 -----------------------------------------------------------------------
--- 5C. LIST FILES WITH DETAILS (name, size, last modified)
+-- 4C. LIST FILES WITH DETAILS (name, size, last modified)
 -----------------------------------------------------------------------
 
 -- PDF files
@@ -316,11 +285,11 @@ FROM DIRECTORY(@RAW.S3_MEDICAL_AUDIO)
 ORDER BY LAST_MODIFIED DESC;
 
 -----------------------------------------------------------------------
--- 5D. READ FILE CONTENT PREVIEW
+-- 4D. READ FILE CONTENT PREVIEW
 --     Verify Snowflake can actually read the file contents (not just list).
 -----------------------------------------------------------------------
 
--- Preview a PDF file (read raw bytes reference)
+-- Preview a PDF file (get file reference for AI_PARSE_DOCUMENT)
 SELECT
   RELATIVE_PATH                           AS FILE_NAME,
   TO_FILE('@RAW.S3_MEDICAL_DOCS', RELATIVE_PATH) AS FILE_REFERENCE,
@@ -351,7 +320,7 @@ FROM DIRECTORY(@RAW.S3_MEDICAL_AUDIO)
 LIMIT 1;
 
 -----------------------------------------------------------------------
--- 5E. QUICK AI FUNCTION TEST ON STAGED FILES
+-- 4E. QUICK AI FUNCTION TEST ON STAGED FILES
 --     Run a single AI function on one file from each stage to confirm
 --     the full pipeline (S3 -> Stage -> AI Function) works end to end.
 -----------------------------------------------------------------------
@@ -383,13 +352,13 @@ LIMIT 1;
 
 
 /*=========================================================================
-  SECTION 6: FILES_LOG VERIFICATION
-  
+  SECTION 5: FILES_LOG VERIFICATION
+
   After Snowpipe ingests file metadata, verify the landing zone.
 =========================================================================*/
 
 -----------------------------------------------------------------------
--- 6A. CHECK FILES_LOG TABLE
+-- 5A. CHECK FILES_LOG TABLE
 -----------------------------------------------------------------------
 SELECT FILE_ID, FILE_NAME, FILE_TYPE, FILE_SIZE_BYTES,
        LANDED_AT, IS_PROCESSED, PROCESSED_AT
@@ -397,7 +366,7 @@ FROM RAW.FILES_LOG
 ORDER BY LANDED_AT DESC;
 
 -----------------------------------------------------------------------
--- 6B. FILE COUNT BY TYPE AND STATUS
+-- 5B. FILE COUNT BY TYPE AND STATUS
 -----------------------------------------------------------------------
 SELECT
   FILE_TYPE,
@@ -409,19 +378,19 @@ GROUP BY FILE_TYPE
 ORDER BY FILE_TYPE;
 
 -----------------------------------------------------------------------
--- 6C. CHECK STREAM HAS DATA (unprocessed files waiting)
+-- 5C. CHECK STREAM HAS DATA (unprocessed files waiting)
 -----------------------------------------------------------------------
 SELECT SYSTEM$STREAM_HAS_DATA('RAW.FILES_LOG_STREAM') AS HAS_UNPROCESSED_FILES;
 
 -----------------------------------------------------------------------
--- 6D. MANUALLY REFRESH PIPES (if auto-ingest hasn't triggered yet)
+-- 5D. MANUALLY REFRESH PIPES (if auto-ingest hasn't triggered yet)
 -----------------------------------------------------------------------
 -- ALTER PIPE RAW.PIPE_MEDICAL_DOCS  REFRESH;
 -- ALTER PIPE RAW.PIPE_MEDICAL_TXT   REFRESH;
 -- ALTER PIPE RAW.PIPE_MEDICAL_AUDIO REFRESH;
 
 -----------------------------------------------------------------------
--- 6E. CHECK PIPE COPY HISTORY (troubleshoot ingest issues)
+-- 5E. CHECK PIPE COPY HISTORY (troubleshoot ingest issues)
 -----------------------------------------------------------------------
 SELECT PIPE_NAME, FILE_NAME, STATUS, ROW_COUNT, ERROR_MESSAGE, LAST_LOAD_TIME
 FROM TABLE(INFORMATION_SCHEMA.COPY_HISTORY(
@@ -433,8 +402,8 @@ LIMIT 20;
 
 
 /*=========================================================================
-  SECTION 7: RESUME PIPES AND TASK (final step)
-  
+  SECTION 6: RESUME PIPES AND TASK (final step)
+
   Run this once everything above is verified.
 =========================================================================*/
 

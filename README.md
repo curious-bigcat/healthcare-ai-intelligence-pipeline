@@ -1,13 +1,13 @@
 # Healthcare AI Intelligence Pipeline
 
-An end-to-end demo that lands medical files (PDF, TXT, WAV, MP3) in S3, auto-ingests them into Snowflake via SNS/EventBridge/Snowpipe, processes them through **11 Cortex AI functions**, and exposes the results via Cortex Search, Cortex Analyst, and a unified Cortex Agent with Snowflake Intelligence as the frontend.
+An end-to-end demo that lands medical files (PDF, TXT, WAV, MP3) in S3, auto-ingests them into Snowflake via S3 Event Notifications -> SQS -> Snowpipe, processes them through **11 Cortex AI functions**, and exposes the results via Cortex Search, Cortex Analyst, and a unified Cortex Agent with Snowflake Intelligence as the frontend.
 
 ## Architecture
 
 ```
 S3 Bucket (pdfs/, txt/, audio/)
         |
-  EventBridge Rule  -->  SNS Topic
+  S3 Event Notification  -->  SQS (Snowflake-managed)
         |
   Snowpipe (x3: PDF, TXT, Audio)
         |
@@ -69,8 +69,9 @@ S3 Bucket (pdfs/, txt/, audio/)
 | `07_cortex_search.sql` | Cortex Search services over documents and audio transcripts |
 | `08_semantic_view.sql` | HEALTHCARE_ANALYTICS semantic view with 11 verified queries |
 | `09_cortex_agent.sql` | Cortex Agent with 3 tools (Analyst + 2 Search services) |
-| `10_aws_setup_guide.sql` | Step-by-step AWS setup (S3, IAM, EventBridge, SNS) + Snowflake Intelligence UI |
+| `10_aws_setup_guide.sql` | Step-by-step AWS setup (S3, IAM, S3 Event Notifications -> SQS) + Snowflake Intelligence UI |
 | `11_sample_data_test.sql` | Validation queries, manual testing, and AI function showcase |
+| `12_s3_sqs_integration_and_file_read.sql` | S3 storage integration, SQS auto-ingest setup, stage file listing and read verification |
 
 ### Python Scripts
 
@@ -105,7 +106,7 @@ S3 Bucket (pdfs/, txt/, audio/)
 ## Prerequisites
 
 - Snowflake account with Cortex AI functions enabled
-- AWS account with S3, SNS, EventBridge access
+- AWS account with S3 access
 - Python 3.10+ with a virtual environment
 
 ## Setup
@@ -122,29 +123,27 @@ python generate_audio_with_voice.py
 
 ### 2. Run SQL scripts in Snowflake
 
-Execute scripts `01` through `09` in order. Each script uses the `HEALTHCARE_AI_DEMO` database.
+Execute scripts `01` through `09` in order, then run `12_s3_sqs_integration_and_file_read.sql` for integration setup and file read verification. Each script uses the `HEALTHCARE_AI_DEMO` database.
 
 ### 3. Configure AWS
 
-Follow the 10-step guide in `10_aws_setup_guide.sql`:
+Follow the guide in `10_aws_setup_guide.sql`:
 
-1. Create S3 bucket with `pdfs/`, `txt/`, `audio/` prefixes
+1. Create S3 bucket with `healthcare/pdfs/`, `healthcare/txt/`, `healthcare/audio/` prefixes
 2. Create IAM policy for Snowflake S3 access
 3. Create IAM role with trust policy for Snowflake's external ID
-4. Enable EventBridge notifications on the S3 bucket
-5. Create SNS topic and update its access policy
-6. Create EventBridge rule targeting the SNS topic (filtering on the 3 prefixes)
-7. Update `01_setup_database.sql` with your bucket name and role ARN
-8. Run `DESC INTEGRATION` to get Snowflake's IAM user ARN and external ID
-9. Update the IAM role trust policy with those values
-10. Resume the Snowpipes and processing task
+4. Run `DESC INTEGRATION` in Snowflake to get IAM user ARN and external ID
+5. Update the IAM role trust policy with those values
+6. Create Snowpipes (AUTO_INGEST = TRUE) and get the SQS queue ARN from `SHOW PIPES`
+7. Configure S3 event notifications to send ObjectCreated events to the Snowflake-managed SQS queue
+8. Resume the Snowpipes and processing task
 
 ### 4. Upload sample files to S3
 
 ```bash
-aws s3 cp sample_files/pdfs/ s3://YOUR-BUCKET/pdfs/ --recursive
-aws s3 cp sample_files/txt/ s3://YOUR-BUCKET/txt/ --recursive
-aws s3 cp sample_files/audio/ s3://YOUR-BUCKET/audio/ --recursive
+aws s3 cp sample_files/pdfs/ s3://YOUR-BUCKET/healthcare/pdfs/ --recursive
+aws s3 cp sample_files/txt/ s3://YOUR-BUCKET/healthcare/txt/ --recursive
+aws s3 cp sample_files/audio/ s3://YOUR-BUCKET/healthcare/audio/ --recursive
 ```
 
 ### 5. Set up Snowflake Intelligence

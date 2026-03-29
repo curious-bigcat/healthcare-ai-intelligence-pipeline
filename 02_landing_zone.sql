@@ -1,13 +1,20 @@
 /*=============================================================================
-  02 - LANDING ZONE: File Log Table, Snowpipe, Stream & Task Trigger
+  02 - LANDING ZONE: File Log Table, Snowpipe (SQS), Stream & Task Trigger
   Healthcare AI Intelligence Pipeline
 
   Flow:
-    S3 file upload → EventBridge → SNS → Snowpipe (auto_ingest)
-    → RAW.FILES_LOG → Stream → Task → calls PROCESS_NEW_FILES() proc
+    S3 file upload -> S3 Event Notification -> SQS Queue -> Snowpipe (auto_ingest)
+    -> RAW.FILES_LOG -> Stream -> Task -> calls PROCESS_NEW_FILES() proc
 
-  IMPORTANT: Replace <YOUR_SNS_TOPIC_ARN> with your actual SNS topic ARN
-             e.g. arn:aws:sns:us-east-1:123456789012:healthcare-ai-file-notifications
+  Snowpipe auto-ingest on AWS uses SQS (not SNS). When you create a pipe
+  with AUTO_INGEST = TRUE, Snowflake provisions an SQS queue. You configure
+  S3 event notifications to send to that SQS queue.
+
+  Steps:
+    1. Create the pipes (AUTO_INGEST = TRUE)
+    2. Run SHOW PIPES to get the notification_channel (SQS queue ARN)
+    3. Configure S3 bucket event notifications to send to that SQS queue
+       (see 10_aws_setup_guide.sql and 12_s3_sqs_integration_and_file_read.sql)
 =============================================================================*/
 
 USE ROLE ACCOUNTADMIN;
@@ -16,7 +23,7 @@ USE SCHEMA RAW;
 USE WAREHOUSE HEALTHCARE_AI_WH;
 
 -----------------------------------------------------------------------
--- 1. FILE LOG TABLE — every file that lands in S3 gets a row here
+-- 1. FILE LOG TABLE -- every file that lands in S3 gets a row here
 -----------------------------------------------------------------------
 CREATE OR REPLACE TABLE RAW.FILES_LOG (
     FILE_ID         NUMBER AUTOINCREMENT PRIMARY KEY,
@@ -31,7 +38,7 @@ CREATE OR REPLACE TABLE RAW.FILES_LOG (
 );
 
 -----------------------------------------------------------------------
--- 2. FILE FORMAT — to parse S3 event notification JSON
+-- 2. FILE FORMAT -- to parse S3 event notification JSON
 -----------------------------------------------------------------------
 CREATE OR REPLACE FILE FORMAT RAW.S3_EVENT_JSON
   TYPE = 'JSON'
@@ -39,12 +46,13 @@ CREATE OR REPLACE FILE FORMAT RAW.S3_EVENT_JSON
 
 -----------------------------------------------------------------------
 -- 3. SNOWPIPE FOR PDFs
---    Auto-ingests file metadata when PDFs land in S3
+--    AUTO_INGEST = TRUE tells Snowflake to provision an SQS queue.
+--    After creation, run: SHOW PIPES to get the notification_channel
+--    (the SQS queue ARN) and configure S3 event notifications.
 -----------------------------------------------------------------------
 CREATE OR REPLACE PIPE RAW.PIPE_MEDICAL_DOCS
   AUTO_INGEST = TRUE
-  AWS_SNS_TOPIC = '<YOUR_SNS_TOPIC_ARN>'
-  COMMENT = 'Auto-ingest pipe for PDF medical documents from S3'
+  COMMENT = 'Auto-ingest pipe for PDF medical documents from S3 via SQS'
 AS
   COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, FILE_SIZE_BYTES, S3_EVENT_TIME)
   FROM (
@@ -58,14 +66,15 @@ AS
   )
   FILE_FORMAT = (TYPE = 'JSON');
 
+-- Get SQS queue ARN for this pipe
+DESC PIPE RAW.PIPE_MEDICAL_DOCS;
+
 -----------------------------------------------------------------------
 -- 4. SNOWPIPE FOR TXT
---    Auto-ingests file metadata when TXT files land in S3
 -----------------------------------------------------------------------
 CREATE OR REPLACE PIPE RAW.PIPE_MEDICAL_TXT
   AUTO_INGEST = TRUE
-  AWS_SNS_TOPIC = '<YOUR_SNS_TOPIC_ARN>'
-  COMMENT = 'Auto-ingest pipe for TXT medical documents from S3'
+  COMMENT = 'Auto-ingest pipe for TXT medical documents from S3 via SQS'
 AS
   COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, FILE_SIZE_BYTES, S3_EVENT_TIME)
   FROM (
@@ -79,15 +88,16 @@ AS
   )
   FILE_FORMAT = (TYPE = 'JSON');
 
+-- Get SQS queue ARN for this pipe
+DESC PIPE RAW.PIPE_MEDICAL_TXT;
+
 -----------------------------------------------------------------------
 -- 5. SNOWPIPE FOR AUDIO (WAV and MP3)
---    Auto-ingests file metadata when audio files land in S3
---    FILE_TYPE is determined by extension in the processing proc
+--    FILE_TYPE is determined by file extension
 -----------------------------------------------------------------------
 CREATE OR REPLACE PIPE RAW.PIPE_MEDICAL_AUDIO
   AUTO_INGEST = TRUE
-  AWS_SNS_TOPIC = '<YOUR_SNS_TOPIC_ARN>'
-  COMMENT = 'Auto-ingest pipe for WAV/MP3 audio consultations from S3'
+  COMMENT = 'Auto-ingest pipe for WAV/MP3 audio consultations from S3 via SQS'
 AS
   COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, FILE_SIZE_BYTES, S3_EVENT_TIME)
   FROM (
@@ -104,8 +114,25 @@ AS
   )
   FILE_FORMAT = (TYPE = 'JSON');
 
+-- Get SQS queue ARN for this pipe
+DESC PIPE RAW.PIPE_MEDICAL_AUDIO;
+
 -----------------------------------------------------------------------
--- 5. STREAM on FILES_LOG — captures new inserts
+-- 6. GET SQS QUEUE ARNs FROM ALL PIPES
+--    The notification_channel column contains the Snowflake-managed
+--    SQS queue ARN. You need this for configuring S3 event notifications.
+--
+--    All 3 pipes share the SAME SQS queue ARN (Snowflake manages one
+--    SQS queue per account). Copy this ARN for the S3 setup step.
+-----------------------------------------------------------------------
+SHOW PIPES IN SCHEMA RAW;
+
+-- Look at the notification_channel column in the output.
+-- It will look like: arn:aws:sqs:us-east-1:123456789012:sf-snowpipe-AIDXYZ-HASH
+-- Save this value -- you need it in Step 5 of 10_aws_setup_guide.sql.
+
+-----------------------------------------------------------------------
+-- 7. STREAM on FILES_LOG -- captures new inserts
 -----------------------------------------------------------------------
 CREATE OR REPLACE STREAM RAW.FILES_LOG_STREAM
   ON TABLE RAW.FILES_LOG
@@ -113,7 +140,7 @@ CREATE OR REPLACE STREAM RAW.FILES_LOG_STREAM
   COMMENT = 'Captures new file arrivals for AI processing';
 
 -----------------------------------------------------------------------
--- 6. TASK — triggered by stream, calls the AI processing stored proc
+-- 8. TASK -- triggered by stream, calls the AI processing stored proc
 --    (The stored procedure is defined in 04_stored_procedure.sql)
 -----------------------------------------------------------------------
 CREATE OR REPLACE TASK RAW.PROCESS_NEW_FILES_TASK
@@ -128,9 +155,13 @@ AS
 -- ALTER TASK RAW.PROCESS_NEW_FILES_TASK RESUME;
 
 -----------------------------------------------------------------------
--- 7. VERIFY & GET SNS POLICY
+-- 9. VERIFY
 -----------------------------------------------------------------------
 SHOW PIPES IN SCHEMA RAW;
+SHOW STREAMS IN SCHEMA RAW;
+SHOW TASKS IN SCHEMA RAW;
 
--- Run this to get the IAM policy needed for your SNS topic:
--- SELECT SYSTEM$GET_AWS_SNS_IAM_POLICY('<YOUR_SNS_TOPIC_ARN>');
+-- Check pipe status
+SELECT SYSTEM$PIPE_STATUS('RAW.PIPE_MEDICAL_DOCS')  AS DOCS_PIPE_STATUS;
+SELECT SYSTEM$PIPE_STATUS('RAW.PIPE_MEDICAL_TXT')   AS TXT_PIPE_STATUS;
+SELECT SYSTEM$PIPE_STATUS('RAW.PIPE_MEDICAL_AUDIO') AS AUDIO_PIPE_STATUS;

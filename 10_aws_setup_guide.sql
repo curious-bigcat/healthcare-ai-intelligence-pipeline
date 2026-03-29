@@ -1,13 +1,18 @@
 /*=============================================================================
-  10 - AWS SETUP GUIDE: S3 Bucket, IAM Role, SNS, EventBridge
+  10 - AWS SETUP GUIDE: S3 Bucket, IAM Role, S3 Event Notifications -> SQS
   Healthcare AI Intelligence Pipeline
 
   This file documents the AWS-side configuration required to complete
   the auto-ingest pipeline. Run these commands in AWS CLI or configure
   via the AWS Console.
 
-  Architecture:
-    S3 (file upload) → EventBridge (Object Created) → SNS Topic → Snowpipe
+  Architecture (using Snowflake-managed SQS):
+    S3 (file upload) -> S3 Event Notification -> SQS (Snowflake-managed) -> Snowpipe
+
+  NOTE: Snowpipe AUTO_INGEST on AWS uses SQS. When you create a pipe with
+  AUTO_INGEST = TRUE, Snowflake provisions and manages an SQS queue for you.
+  You simply configure S3 to send event notifications to that SQS queue.
+  No SNS topic, EventBridge rule, or notification integration is needed.
 =============================================================================*/
 
 -----------------------------------------------------------------------
@@ -106,124 +111,150 @@ DESCRIBE INTEGRATION HEALTHCARE_S3_INTEGRATION;
 */
 
 -----------------------------------------------------------------------
--- STEP 5: ENABLE EVENTBRIDGE ON THE S3 BUCKET
+-- STEP 5: CONFIGURE S3 EVENT NOTIFICATIONS -> SNOWFLAKE SQS QUEUE
+--
+--   Snowpipe AUTO_INGEST provisions an SQS queue managed by Snowflake.
+--   After creating the pipes in 02_landing_zone.sql, get the SQS ARN:
 -----------------------------------------------------------------------
-/*
-  aws s3api put-bucket-notification-configuration \
-    --bucket healthcare-ai-demo-<YOUR_ACCOUNT_ID> \
-    --notification-configuration '{
-      "EventBridgeConfiguration": {}
-    }'
-*/
-
------------------------------------------------------------------------
--- STEP 6: CREATE SNS TOPIC
------------------------------------------------------------------------
-/*
-  aws sns create-topic \
-    --name healthcare-ai-file-notifications \
-    --region us-east-1
-
-  Note the Topic ARN: arn:aws:sns:us-east-1:<YOUR_AWS_ACCOUNT_ID>:healthcare-ai-file-notifications
-  Use this in 02_landing_zone.sql for AWS_SNS_TOPIC.
-*/
-
------------------------------------------------------------------------
--- STEP 7: ADD SNOWFLAKE IAM POLICY TO SNS TOPIC
------------------------------------------------------------------------
--- Run this in Snowflake to get the policy:
--- SELECT SYSTEM$GET_AWS_SNS_IAM_POLICY('arn:aws:sns:us-east-1:<YOUR_AWS_ACCOUNT_ID>:healthcare-ai-file-notifications');
+SHOW PIPES IN DATABASE HEALTHCARE_AI_DEMO;
+-- Look at the notification_channel column. It will look like:
+-- arn:aws:sqs:us-east-1:123456789012:sf-snowpipe-AIDXYZ-HASH
+--
+-- All pipes in the same account share the same SQS queue ARN.
+-- Copy this ARN for the S3 event notification configuration below.
 
 /*
-  The output will be a JSON policy. Add it to your SNS topic access policy:
+  OPTION A: AWS CLI — Configure S3 event notifications to Snowflake's SQS queue
 
-  aws sns set-topic-attributes \
-    --topic-arn arn:aws:sns:us-east-1:<YOUR_AWS_ACCOUNT_ID>:healthcare-ai-file-notifications \
-    --attribute-name Policy \
-    --attribute-value '{
-      "Version": "2012-10-17",
-      "Statement": [
-        {
-          "Sid": "AllowSnowflakeSubscribe",
-          "Effect": "Allow",
-          "Principal": {
-            "AWS": "<STORAGE_AWS_IAM_USER_ARN from DESCRIBE INTEGRATION>"
-          },
-          "Action": ["sns:Subscribe"],
-          "Resource": ["arn:aws:sns:us-east-1:<YOUR_AWS_ACCOUNT_ID>:healthcare-ai-file-notifications"]
-        },
-        {
-          "Sid": "AllowEventBridgePublish",
-          "Effect": "Allow",
-          "Principal": {
-            "Service": "events.amazonaws.com"
-          },
-          "Action": "sns:Publish",
-          "Resource": "arn:aws:sns:us-east-1:<YOUR_AWS_ACCOUNT_ID>:healthcare-ai-file-notifications"
+  Create a notification config file (s3-event-notification.json):
+
+  {
+    "QueueConfigurations": [
+      {
+        "Id": "SnowpipePDFs",
+        "QueueArn": "<SQS_QUEUE_ARN_FROM_SHOW_PIPES>",
+        "Events": ["s3:ObjectCreated:*"],
+        "Filter": {
+          "Key": {
+            "FilterRules": [
+              {"Name": "prefix", "Value": "healthcare/pdfs/"}
+            ]
+          }
         }
-      ]
-    }'
-*/
-
------------------------------------------------------------------------
--- STEP 8: CREATE EVENTBRIDGE RULE
------------------------------------------------------------------------
-/*
-  aws events put-rule \
-    --name healthcare-ai-s3-file-created \
-    --event-pattern '{
-      "source": ["aws.s3"],
-      "detail-type": ["Object Created"],
-      "detail": {
-        "bucket": {
-          "name": ["healthcare-ai-demo-<YOUR_ACCOUNT_ID>"]
-        },
-        "object": {
-          "key": [
-            {"prefix": "healthcare/pdfs/"},
-            {"prefix": "healthcare/txt/"},
-            {"prefix": "healthcare/audio/"}
-          ]
+      },
+      {
+        "Id": "SnowpipeTXT",
+        "QueueArn": "<SQS_QUEUE_ARN_FROM_SHOW_PIPES>",
+        "Events": ["s3:ObjectCreated:*"],
+        "Filter": {
+          "Key": {
+            "FilterRules": [
+              {"Name": "prefix", "Value": "healthcare/txt/"}
+            ]
+          }
+        }
+      },
+      {
+        "Id": "SnowpipeAudio",
+        "QueueArn": "<SQS_QUEUE_ARN_FROM_SHOW_PIPES>",
+        "Events": ["s3:ObjectCreated:*"],
+        "Filter": {
+          "Key": {
+            "FilterRules": [
+              {"Name": "prefix", "Value": "healthcare/audio/"}
+            ]
+          }
         }
       }
-    }' \
-    --state ENABLED \
-    --description "Route S3 file creation events to SNS for Snowpipe"
+    ]
+  }
 
-  aws events put-targets \
-    --rule healthcare-ai-s3-file-created \
-    --targets "Id"="1","Arn"="arn:aws:sns:us-east-1:<YOUR_AWS_ACCOUNT_ID>:healthcare-ai-file-notifications"
+  aws s3api put-bucket-notification-configuration \
+    --bucket healthcare-ai-demo-<YOUR_ACCOUNT_ID> \
+    --notification-configuration file://s3-event-notification.json
+
+
+  OPTION B: AWS Console
+
+  1. Go to S3 -> your bucket -> Properties -> Event notifications
+  2. Create 3 event notifications:
+
+     Notification 1 (PDFs):
+       Name:   snowpipe-pdfs
+       Prefix: healthcare/pdfs/
+       Events: All object create events (s3:ObjectCreated:*)
+       Dest:   SQS queue -> Enter SQS queue ARN from SHOW PIPES
+
+     Notification 2 (TXT):
+       Name:   snowpipe-txt
+       Prefix: healthcare/txt/
+       Events: All object create events (s3:ObjectCreated:*)
+       Dest:   SQS queue -> Enter SQS queue ARN from SHOW PIPES
+
+     Notification 3 (Audio):
+       Name:   snowpipe-audio
+       Prefix: healthcare/audio/
+       Events: All object create events (s3:ObjectCreated:*)
+       Dest:   SQS queue -> Enter SQS queue ARN from SHOW PIPES
 */
 
 -----------------------------------------------------------------------
--- STEP 9: VERIFY THE PIPELINE
+-- STEP 6: VERIFY S3 EVENT NOTIFICATIONS ARE CONFIGURED
 -----------------------------------------------------------------------
 /*
-  Upload test files:
+  aws s3api get-bucket-notification-configuration \
+    --bucket healthcare-ai-demo-<YOUR_ACCOUNT_ID>
 
-  aws s3 cp test_report.pdf s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/pdfs/
-  aws s3 cp test_notes.txt s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/txt/
-  aws s3 cp test_consultation.wav s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/audio/
-  aws s3 cp test_consultation.mp3 s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/audio/
-
-  Then check in Snowflake:
-
-  -- Check pipe status
-  SELECT SYSTEM$PIPE_STATUS('HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_DOCS');
-  SELECT SYSTEM$PIPE_STATUS('HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_AUDIO');
-
-  -- Check files landed
-  SELECT * FROM HEALTHCARE_AI_DEMO.RAW.FILES_LOG ORDER BY LANDED_AT DESC;
-
-  -- Check stream has data
-  SELECT SYSTEM$STREAM_HAS_DATA('HEALTHCARE_AI_DEMO.RAW.FILES_LOG_STREAM');
+  Expected output should show 3 QueueConfigurations pointing to
+  the Snowflake SQS queue ARN.
 */
 
 -----------------------------------------------------------------------
--- STEP 10: RESUME THE PROCESSING TASK
+-- STEP 7: TEST THE PIPELINE
 -----------------------------------------------------------------------
--- Once the full pipeline is verified:
+/*
+  Upload sample files to trigger auto-ingest:
+
+  aws s3 cp sample_files/pdfs/ s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/pdfs/ --recursive
+  aws s3 cp sample_files/txt/ s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/txt/ --recursive
+  aws s3 cp sample_files/audio/ s3://healthcare-ai-demo-<YOUR_ACCOUNT_ID>/healthcare/audio/ --recursive
+
+  Then verify in Snowflake:
+*/
+
+-- Check pipe status (should show pendingFileCount > 0 shortly after upload)
+SELECT SYSTEM$PIPE_STATUS('HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_DOCS')  AS DOCS_STATUS;
+SELECT SYSTEM$PIPE_STATUS('HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_TXT')   AS TXT_STATUS;
+SELECT SYSTEM$PIPE_STATUS('HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_AUDIO') AS AUDIO_STATUS;
+
+-- Check files landed in FILES_LOG
+SELECT * FROM HEALTHCARE_AI_DEMO.RAW.FILES_LOG ORDER BY LANDED_AT DESC;
+
+-- Check stream has data for processing
+SELECT SYSTEM$STREAM_HAS_DATA('HEALTHCARE_AI_DEMO.RAW.FILES_LOG_STREAM') AS READY;
+
+-- If auto-ingest hasn't triggered, manually refresh pipes:
+-- ALTER PIPE HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_DOCS  REFRESH;
+-- ALTER PIPE HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_TXT   REFRESH;
+-- ALTER PIPE HEALTHCARE_AI_DEMO.RAW.PIPE_MEDICAL_AUDIO REFRESH;
+
+-- Check copy history for errors
+SELECT PIPE_NAME, FILE_NAME, STATUS, ROW_COUNT, ERROR_MESSAGE, LAST_LOAD_TIME
+FROM TABLE(INFORMATION_SCHEMA.COPY_HISTORY(
+  TABLE_NAME   => 'HEALTHCARE_AI_DEMO.RAW.FILES_LOG',
+  START_TIME   => DATEADD(HOUR, -24, CURRENT_TIMESTAMP())
+))
+ORDER BY LAST_LOAD_TIME DESC
+LIMIT 20;
+
+-----------------------------------------------------------------------
+-- STEP 8: RESUME THE PROCESSING TASK
+-----------------------------------------------------------------------
+-- Once files are landing successfully in FILES_LOG:
 ALTER TASK HEALTHCARE_AI_DEMO.RAW.PROCESS_NEW_FILES_TASK RESUME;
+
+-- Verify task is running
+SHOW TASKS LIKE 'PROCESS_NEW_FILES_TASK' IN SCHEMA HEALTHCARE_AI_DEMO.RAW;
 
 -----------------------------------------------------------------------
 -- SNOWFLAKE INTELLIGENCE SETUP (UI Steps)
@@ -240,4 +271,29 @@ ALTER TASK HEALTHCARE_AI_DEMO.RAW.PROCESS_NEW_FILES_TASK RESUME;
      - AudioSearch (search transcribed consultations)
   5. Test with sample questions from the agent definition
   6. Share with your team as needed
+*/
+
+-----------------------------------------------------------------------
+-- TROUBLESHOOTING
+-----------------------------------------------------------------------
+/*
+  Q: Pipes are created but files don't appear in FILES_LOG?
+  A: Check these in order:
+     1. Verify S3 event notifications: aws s3api get-bucket-notification-configuration --bucket <bucket>
+     2. Verify the SQS ARN matches: SHOW PIPES; (check notification_channel column)
+     3. Check IAM role trust policy has correct Snowflake user ARN and external ID
+     4. Try manual refresh: ALTER PIPE RAW.PIPE_MEDICAL_DOCS REFRESH;
+     5. Check COPY_HISTORY for error messages (query above)
+
+  Q: Getting "Access Denied" errors?
+  A: Run DESCRIBE INTEGRATION HEALTHCARE_S3_INTEGRATION; and verify:
+     - STORAGE_AWS_IAM_USER_ARN matches the Principal in your IAM trust policy
+     - STORAGE_AWS_EXTERNAL_ID matches the sts:ExternalId condition
+     - The IAM role has the S3 access policy attached
+
+  Q: Pipe shows executionState = "PAUSED"?
+  A: Pipes are created paused. Resume them:
+     ALTER PIPE RAW.PIPE_MEDICAL_DOCS  SET PIPE_EXECUTION_PAUSED = FALSE;
+     ALTER PIPE RAW.PIPE_MEDICAL_TXT   SET PIPE_EXECUTION_PAUSED = FALSE;
+     ALTER PIPE RAW.PIPE_MEDICAL_AUDIO SET PIPE_EXECUTION_PAUSED = FALSE;
 */
