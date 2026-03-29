@@ -134,13 +134,12 @@ CREATE OR REPLACE PIPE RAW.PIPE_MEDICAL_DOCS
   AUTO_INGEST = TRUE
   COMMENT = 'Auto-ingest pipe for PDF medical documents from S3 via SQS'
 AS
-  COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, FILE_SIZE_BYTES, S3_EVENT_TIME)
+  COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, S3_EVENT_TIME)
   FROM (
     SELECT
       METADATA$FILENAME                               AS FILE_NAME,
       METADATA$FILENAME                               AS FILE_PATH,
       'PDF'                                           AS FILE_TYPE,
-      METADATA$FILE_CONTENT_KEY                       AS FILE_SIZE_BYTES,
       METADATA$START_SCAN_TIME                        AS S3_EVENT_TIME
     FROM @RAW.S3_MEDICAL_DOCS
   )
@@ -150,13 +149,12 @@ CREATE OR REPLACE PIPE RAW.PIPE_MEDICAL_TXT
   AUTO_INGEST = TRUE
   COMMENT = 'Auto-ingest pipe for TXT medical documents from S3 via SQS'
 AS
-  COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, FILE_SIZE_BYTES, S3_EVENT_TIME)
+  COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, S3_EVENT_TIME)
   FROM (
     SELECT
       METADATA$FILENAME                               AS FILE_NAME,
       METADATA$FILENAME                               AS FILE_PATH,
       'TXT'                                           AS FILE_TYPE,
-      METADATA$FILE_CONTENT_KEY                       AS FILE_SIZE_BYTES,
       METADATA$START_SCAN_TIME                        AS S3_EVENT_TIME
     FROM @RAW.S3_MEDICAL_TXT
   )
@@ -166,16 +164,15 @@ CREATE OR REPLACE PIPE RAW.PIPE_MEDICAL_AUDIO
   AUTO_INGEST = TRUE
   COMMENT = 'Auto-ingest pipe for WAV/MP3 audio consultations from S3 via SQS'
 AS
-  COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, FILE_SIZE_BYTES, S3_EVENT_TIME)
+  COPY INTO RAW.FILES_LOG (FILE_NAME, FILE_PATH, FILE_TYPE, S3_EVENT_TIME)
   FROM (
     SELECT
       METADATA$FILENAME                               AS FILE_NAME,
       METADATA$FILENAME                               AS FILE_PATH,
       CASE
-        WHEN UPPER(METADATA$FILENAME) LIKE '%.MP3' THEN 'MP3'
+        WHEN METADATA$FILENAME ILIKE '%.mp3' THEN 'MP3'
         ELSE 'WAV'
       END                                             AS FILE_TYPE,
-      METADATA$FILE_CONTENT_KEY                       AS FILE_SIZE_BYTES,
       METADATA$START_SCAN_TIME                        AS S3_EVENT_TIME
     FROM @RAW.S3_MEDICAL_AUDIO
   )
