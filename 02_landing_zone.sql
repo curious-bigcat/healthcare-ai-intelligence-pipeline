@@ -38,11 +38,16 @@ CREATE OR REPLACE TABLE RAW.FILES_LOG (
 );
 
 -----------------------------------------------------------------------
--- 2. FILE FORMAT -- to parse S3 event notification JSON
+-- 2. FILE FORMATS
+--    We only need METADATA$ columns (file name, size, scan time),
+--    not the actual file content. Using CSV with no delimiters avoids
+--    parse errors on binary (PDF, WAV, MP3) and plain text files.
 -----------------------------------------------------------------------
-CREATE OR REPLACE FILE FORMAT RAW.S3_EVENT_JSON
-  TYPE = 'JSON'
-  STRIP_OUTER_ARRAY = TRUE;
+CREATE OR REPLACE FILE FORMAT RAW.METADATA_ONLY_FORMAT
+  TYPE            = 'CSV'
+  RECORD_DELIMITER = NONE
+  FIELD_DELIMITER  = NONE
+  COMMENT = 'Format for metadata-only ingestion -- skips file content parsing';
 
 -----------------------------------------------------------------------
 -- 3. SNOWPIPE FOR PDFs
@@ -64,7 +69,7 @@ AS
       METADATA$START_SCAN_TIME                        AS S3_EVENT_TIME
     FROM @RAW.S3_MEDICAL_DOCS
   )
-  FILE_FORMAT = (TYPE = 'JSON');
+  FILE_FORMAT = (FORMAT_NAME = 'RAW.METADATA_ONLY_FORMAT');
 
 -- Get SQS queue ARN for this pipe
 DESC PIPE RAW.PIPE_MEDICAL_DOCS;
@@ -86,7 +91,7 @@ AS
       METADATA$START_SCAN_TIME                        AS S3_EVENT_TIME
     FROM @RAW.S3_MEDICAL_TXT
   )
-  FILE_FORMAT = (TYPE = 'JSON');
+  FILE_FORMAT = (FORMAT_NAME = 'RAW.METADATA_ONLY_FORMAT');
 
 -- Get SQS queue ARN for this pipe
 DESC PIPE RAW.PIPE_MEDICAL_TXT;
@@ -112,7 +117,7 @@ AS
       METADATA$START_SCAN_TIME                        AS S3_EVENT_TIME
     FROM @RAW.S3_MEDICAL_AUDIO
   )
-  FILE_FORMAT = (TYPE = 'JSON');
+  FILE_FORMAT = (FORMAT_NAME = 'RAW.METADATA_ONLY_FORMAT');
 
 -- Get SQS queue ARN for this pipe
 DESC PIPE RAW.PIPE_MEDICAL_AUDIO;
